@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # SideQuest
 
 > Do something with your boredom.
