@@ -68,5 +68,3 @@ Sidequest/
 
 Built for **Beginner’s Paradise – FirstCommit**.
 =======
-# Sidequest
->>>>>>> 454312817fc7e0842aed3639d7f2127318834131
