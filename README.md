@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # SideQuest
 
 > Do something with your boredom.
@@ -67,3 +68,6 @@ Sidequest/
 ## Hackathon
 
 Built for **Beginner’s Paradise – FirstCommit**.
+=======
+# Sidequest
+>>>>>>> 454312817fc7e0842aed3639d7f2127318834131
