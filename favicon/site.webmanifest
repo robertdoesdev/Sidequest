@@ -1,0 +1,14 @@
+{
+  "name": "SideQuest",
+  "short_name": "SideQuest",
+  "description": "Do something with your boredom.",
+  "start_url": "../index.html",
+  "scope": "../",
+  "display": "standalone",
+  "background_color": "#fffdee",
+  "theme_color": "#d7f05a",
+  "icons": [
+    { "src": "android-chrome-192x192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "android-chrome-512x512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

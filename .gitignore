@@ -1,0 +1,8 @@
+.DS_Store
+Thumbs.db
+.vscode/
+node_modules/
+*.log
+
+# SideQuest server data (accounts, VAPID keys)
+data/
