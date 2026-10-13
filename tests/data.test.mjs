@@ -76,3 +76,19 @@ test('merge never loses local data and respects unsaves', () => {
   assert.deepEqual(m.completed.map((c) => c.id).sort(), ['1', '5']);
   assert.equal(m.completed.find((c) => c.id === '1').learned, 'older note'); // fills gaps, keeps newer fields
 });
+
+test('merge keeps the most recently saved reminder preferences', () => {
+  const a = { ...blank(), notifPrefs: { time: '09:00', daily: true, at: 100 } };
+  const b = { ...blank(), notifPrefs: { time: '18:30', daily: false, at: 200 } };
+  assert.equal(mergeStates(a, b).notifPrefs.time, '18:30');
+  assert.equal(mergeStates(b, a).notifPrefs.time, '18:30');
+  assert.equal(mergeStates(a, blank()).notifPrefs.time, '09:00');
+  assert.equal(mergeStates(blank(), blank()).notifPrefs, undefined);
+});
+
+test('V2.1 quests are appended, never renumbered', () => {
+  assert.ok(quests.length >= 169);
+  assert.equal(quests[0].title, 'Learn a card flourish');
+  assert.equal(quests[43].id, '44');
+  assert.ok(quests.slice(139).every((q) => q.id === String(quests.indexOf(q) + 1)));
+});

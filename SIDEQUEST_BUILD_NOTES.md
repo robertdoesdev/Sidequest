@@ -46,3 +46,23 @@ The Daily SideQuest is deterministic per date **and installation**, so two diffe
 ## Photography
 
 Quest cards now use real Unsplash photography instead of the generated SVG illustrations. See `PHOTO_CREDITS.md` for the source pages and photographers.
+
+## V2.1 (surgical pass)
+
+- Mobile nav is Home, Today, Roll, Discover, Profile with Roll centred (SVG die icon).
+- Quest timer counts down from the persisted `active.startedAt`. One interval at most, cleared on every render and when leaving the screen. "Abandon quest" is now wired up.
+- Reminder time is editable at any time with an explicit Save. Reminder choices (`notifPrefs`, latest save wins) sync with the account and update the server push schedule. The browser permission flag is never synced.
+- Completion screen restored to dark ink with explicit text colours. An earlier layer had lightened the background and left light text on it.
+- Streak is a stamped badge with a 7-pip week meter (`streakBadge()` in `app.js`).
+- Launch splash (`splash.js` + `#sq-splash`) shows once per session; skipped for reduced motion.
+- 30 new quests (IDs 140-169), appended so existing IDs are unchanged.
+
+Known limits: friend search is by exact username; real background push needs HTTPS and persistent storage on the host; no new photography was added in this pass, so `PHOTO_CREDITS.md` is unchanged.
+
+## V3 (persistent backend + community)
+
+- Storage moved from a JSON file to PostgreSQL (`lib/db.mjs`, `migrations/001_init.sql`); the same SQL runs on `pg` in production and on embedded PGlite locally/in tests. Custom auth retained (existing accounts import with `scripts/import-json.mjs`).
+- API logic lives in `lib/app.mjs` (`createApp`), used by `server.mjs` locally and `api/index.mjs` on Vercel.
+- New: public profiles, community Showcase (explicit publish/unpublish), friend cancel/block/report, challenge cancel + expiry + server-verified completion, password change, DB-backed rate limits, cron endpoint for scheduled push.
+- New client: dedicated `#/login` / `#/signup`, `#/u/:username`, `share.js`, network-first offline service worker.
+- Not done / needs external setup: hosted-database run, Vercel deploy, real push delivery, email-based recovery.

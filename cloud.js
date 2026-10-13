@@ -78,11 +78,14 @@ export async function refreshMe() {
   if (r.ok) { const a = getAccount(); if (a) setAccount({ ...a, user: r.data.user }); }
   return r;
 }
-export const updateProfile = async (displayName) => {
-  const r = await api('/api/me', { method: 'PATCH', body: { displayName } });
+/** Accepts a display name string, or an object with any of displayName / bio / avatar / profilePublic. */
+export const updateProfile = async (fields) => {
+  const body = typeof fields === 'string' ? { displayName: fields } : fields;
+  const r = await api('/api/me', { method: 'PATCH', body });
   if (r.ok) { const a = getAccount(); if (a) setAccount({ ...a, user: r.data.user }); }
   return r;
 };
+export const changePassword = (current, next) => api('/api/me/password', { method: 'POST', body: { current, next } });
 
 /* ---------- merge (never destroys local data) ---------- */
 const emptyStamps = () => ({ saved: {}, interests: {} });
@@ -134,18 +137,27 @@ export function mergeStates(a, b) {
     onboarded: !!(a.onboarded || b.onboarded),
     revealed: [...new Set([...(a.revealed || []), ...(b.revealed || [])])],
     dailyDone: { ...(b.dailyDone || {}), ...(a.dailyDone || {}) },
-    active
+    active,
+    notifPrefs: [a.notifPrefs, b.notifPrefs].filter(Boolean).sort((x, y) => (y.at || 0) - (x.at || 0))[0]
   };
 }
 
 /* The synced slice of app state. Device-specific things (notification
    permission, skip history, UI state) are intentionally not synced. */
-export const syncable = (s) => ({
-  v: 2,
-  interests: s.interests, saved: s.saved, completed: s.completed,
-  onboarded: s.onboarded, revealed: s.revealed, stamps: s.stamps,
-  dailyDone: s.dailyDone, active: s.active
-});
+export const syncable = (s) => {
+  const n = s.prefs?.notif;
+  return {
+    v: 2,
+    interests: s.interests, saved: s.saved, completed: s.completed,
+    onboarded: s.onboarded, revealed: s.revealed, stamps: s.stamps,
+    dailyDone: s.dailyDone, active: s.active,
+    /* Reminder choices follow the account; whether THIS browser has granted
+       permission (notif.enabled) is device-specific and never synced. */
+    notifPrefs: n && s.prefs.notifAt
+      ? { daily: !!n.daily, challenges: !!n.challenges, reminders: !!n.reminders, followups: !!n.followups, time: n.time, at: s.prefs.notifAt }
+      : undefined
+  };
+};
 
 /* ---------- sync engine ---------- */
 const hooks = {};
@@ -203,7 +215,32 @@ export const removeFriend = (username) => api(`/api/friends/${encodeURIComponent
 export const getChallenges = () => api('/api/challenges');
 export const sendChallenge = (to, questId, message) => api('/api/challenges', { method: 'POST', body: { to, questId, message } });
 export const respondChallenge = (id, accept) => api(`/api/challenges/${id}/respond`, { method: 'POST', body: { accept } });
-export const completeChallenge = (id) => api(`/api/challenges/${id}/complete`, { method: 'POST' });
+export const cancelChallenge = (id) => api(`/api/challenges/${id}/cancel`, { method: 'POST' });
+/** The server only counts a result once the quest is in the account's synced progress, so sync first. */
+export async function completeChallenge(id) {
+  await syncSettled();
+  return api(`/api/challenges/${id}/complete`, { method: 'POST' });
+}
+export async function syncSettled() {
+  for (let i = 0; i < 25 && busy; i++) await new Promise((r) => setTimeout(r, 150));
+  return syncNow();
+}
+export const cancelFriendRequest = (username) => api('/api/friends/cancel', { method: 'POST', body: { username } });
+export const getBlocks = () => api('/api/blocks');
+export const blockUser = (username) => api('/api/blocks', { method: 'POST', body: { username } });
+export const unblockUser = (username) => api(`/api/blocks/${encodeURIComponent(username)}`, { method: 'DELETE' });
+export const reportUser = (username, reason, showcaseId) => api('/api/report', { method: 'POST', body: { username, reason, showcaseId } });
+
+/* ---------- public profiles & community showcase ---------- */
+const enc = encodeURIComponent;
+export const getProfile = (username) => api(`/api/profiles/${enc(username)}`);
+export const getProfilePosts = (username, cursor) => api(`/api/profiles/${enc(username)}/posts?limit=12${cursor ? `&cursor=${cursor}` : ''}`);
+export const getShowcase = ({ cursor, mine } = {}) => api(`/api/showcase?limit=12${mine ? '&mine=1' : ''}${cursor ? `&cursor=${cursor}` : ''}`);
+export async function publishPost(questId, note = '') {
+  await syncSettled();                          // the server publishes only completions it can see in your synced progress
+  return api('/api/showcase', { method: 'POST', body: { questId, note } });
+}
+export const unpublishPost = (id) => api(`/api/showcase/${id}`, { method: 'DELETE' });
 
 /* ---------- push ---------- */
 export const pushSubscribe = (subscription, prefs) => api('/api/push/subscribe', { method: 'POST', body: { subscription, prefs, tzOffset: new Date().getTimezoneOffset() } });

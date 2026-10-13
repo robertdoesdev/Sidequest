@@ -5,5 +5,6 @@ echo.
 echo  SIDEQUEST
  echo Starting the real local app + backend...
 echo.
+if not exist node_modules call npm install
 node server.mjs
 pause

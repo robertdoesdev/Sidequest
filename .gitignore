@@ -6,3 +6,9 @@ node_modules/
 
 # SideQuest server data (accounts, VAPID keys)
 data/
+
+# secrets
+.env
+.env.*
+!.env.example
+.vercel/

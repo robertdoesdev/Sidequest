@@ -24,6 +24,7 @@ import {
 } from './recommend.js';
 import * as cloud from './cloud.js';
 import * as notify from './notify.js';
+import { profileUrl, questUrl, shareLink, shareMessage } from './share.js';
 import {
   drawClearCard,
   downloadCard,
@@ -85,7 +86,10 @@ const ui = {
   home: null,
   weird: { level: 2, id: null, shown: [] },
   net: { friends: null, challenges: null, waiting: 0, loading: false, error: '' },
-  account: { mode: 'signin', error: '', busy: false, pending: null, confirmDelete: false },
+  account: { mode: 'signin', error: '', errors: {}, busy: false, pending: null, confirmDelete: false, next: '' },
+  showcase: { tab: 'community', community: { posts: [], next: null, loading: false, loaded: false, error: '' }, mine: { posts: [], next: null, loading: false, loaded: false, error: '' } },
+  profile: { username: '', status: 'idle' },
+  blocks: null,
   chal: { quest: '', friend: '', message: '', busy: false },
   sync: { state: 'idle', last: 0 },
   backendChecked: false,
@@ -224,7 +228,8 @@ function navSvg(kind) {
     home: '<path d="M3 10.5 12 3l9 7.5v8a1.5 1.5 0 0 1-1.5 1.5h-5v-6h-5v6h-5A1.5 1.5 0 0 1 3 18.5z"/>',
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
     compass: '<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.1 4.9-4.9 2.1 2.1-4.9z"/>',
-    profile: '<circle cx="12" cy="8" r="3.5"/><path d="M5 21c.8-4 3.1-6 7-6s6.2 2 7 6"/>'
+    profile: '<circle cx="12" cy="8" r="3.5"/><path d="M5 21c.8-4 3.1-6 7-6s6.2 2 7 6"/>',
+    roll: '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><circle cx="8.5" cy="8.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="8.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="8.5" cy="15.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="15.5" r="1.1" fill="currentColor" stroke="none"/>'
   };
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[kind] || paths.home}</svg>`;
 }
@@ -279,12 +284,12 @@ function shell(content, { immersive = false } = {}) {
         <span class="nav-icon" aria-hidden="true">${navSvg('sun')}</span>
         <span>Today</span>
       </a>
+      <a href="#/roll" class="mobile-roll${r === '/roll' ? ' mobile-active' : ''}" aria-label="Roll a quest"${r === '/roll' ? ' aria-current="page"' : ''}>
+        <span class="roll-glyph" aria-hidden="true">${navSvg('roll')}</span>
+      </a>
       <a href="#/discover" class="${mHere('/discover').trim()}">
         <span class="nav-icon" aria-hidden="true">${navSvg('compass')}</span>
         <span>Discover</span>
-      </a>
-      <a href="#/roll" class="mobile-roll" aria-label="Roll a quest">
-        <span class="roll-glyph" aria-hidden="true">✣</span>
       </a>
       <a href="#/progress" class="${mHere('/progress').trim()}">
         <span class="nav-icon" aria-hidden="true">${navSvg('profile')}</span>
@@ -373,6 +378,26 @@ function visual(q, cls = '') {
     : `<span class="${cls}">${icon(q)}</span>`;
 }
 
+/* Streak artifact: a small collectible stamp + a 7-pip week meter.
+   variants: 'mini' (card corner), 'inline' (under a heading), 'full' (rewards / profile) */
+const STREAK_MARKS = [3, 7, 14, 30, 60, 100];
+function streakBadge(n, variant = 'full') {
+  if (!n) return '';
+  const on = ((n - 1) % 7) + 1;
+  const next = STREAK_MARKS.find((m) => m > n);
+  const pips = Array.from({ length: 7 }, (_, i) => `<i class="${i < on ? 'on' : ''}"></i>`).join('');
+  const label = `${n} day${n === 1 ? '' : 's'} in a row`;
+  return `
+    <div class="streak-badge streak-${variant}" role="img" aria-label="${label}">
+      <div class="streak-seal"><b>${n}</b><small>${n === 1 ? 'DAY' : 'DAYS'}</small></div>
+      <div class="streak-meta">
+        <span class="streak-title">IN A ROW</span>
+        <span class="streak-pips" aria-hidden="true">${pips}</span>
+        ${variant === 'mini' ? '' : `<span class="streak-next">${next ? `${next - n} more to the ${next}-day mark` : 'Legend status'}</span>`}
+      </div>
+    </div>`;
+}
+
 /* ---------------- Daily SideQuest ---------------- */
 const MAX_SKIPS = 3;
 
@@ -437,7 +462,7 @@ function dailyCard() {
         <div class="daily-side" aria-hidden="true">
           <span class="daily-icon">${icon(q)}</span>
           <span class="daily-tag">${typeInfo(q.type).tagline}</span>
-          ${d.streak ? `<span class="daily-streak">🔥 ${d.streak} DAY${d.streak === 1 ? '' : 'S'} IN A ROW</span>` : ''}
+          ${streakBadge(d.streak, 'mini')}
         </div>
       </div>
     </section>
@@ -464,11 +489,7 @@ function daily() {
             <p class="type-tagline">${t.icon} ${esc(t.tagline)}</p>
             <p>${esc(q.description)}</p>
             <p class="daily-meta">${metaLine(q)}</p>
-            ${
-              d.streak
-                ? `<p class="daily-streak-line">🔥 ${d.streak} day${d.streak === 1 ? '' : 's'} in a row</p>`
-                : ''
-            }
+            ${streakBadge(d.streak, 'inline')}
             ${dailyActions(d, { details: false })}
             <div class="detail-actions">
               <button class="btn btn-outline btn-lg" data-save="${q.id}">
@@ -1660,11 +1681,13 @@ function active(id) {
                 ESTIMATED TIME
               </span>
 
-              <strong id="timer">
+              <strong id="timer" data-minutes="${q.minutes}" role="timer" aria-live="off">
                 ${String(q.minutes).padStart(2, '0')}:00
               </strong>
 
-              <p class="muted">
+              <div class="timer-bar" aria-hidden="true"><i id="timer-fill"></i></div>
+
+              <p class="muted" id="timer-note">
                 You don't have to rush.
                 The timer is just a suggestion.
               </p>
@@ -1692,6 +1715,7 @@ function active(id) {
           <button
             class="btn btn-outline btn-xl"
             data-abandon
+            data-act="abandon"
           >
             ABANDON QUEST
           </button>
@@ -1740,10 +1764,12 @@ function complete(id) {
 
   return `
     <div class="complete-page">
+      <div class="confetti" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
       <div class="complete-inner">
         <div class="completion-art">
           <img src="${questImage(q)}" alt="" />
           <span>QUEST CLEAR</span>
+          <em class="completion-no">NO. ${q.id.padStart(3, '0')}</em>
         </div>
 
         <span class="eyebrow">
@@ -1759,20 +1785,23 @@ function complete(id) {
           ${esc(q.title)}. ${wasDaily ? 'Today’s SideQuest is in the bag.' : 'Nice one.'}
         </p>
 
-        ${wasDaily && streak > 1 ? `<p class="daily-streak-line">${streak} DAYS IN A ROW</p>` : ''}
+        ${wasDaily && streak > 1 ? streakBadge(streak, 'full') : ''}
 
-        <div class="reward-list">
-          <div>
+        <div class="reward-list" aria-label="What you collected">
+          <div class="reward-tile earned">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.7 2.7L16.3 9.5"/></svg>
             <strong>+1</strong>
             <span>QUEST</span>
           </div>
 
-          <div>
+          <div class="reward-tile ${newSkill ? 'earned' : ''}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18"/></svg>
             <strong>${newSkill ? '+1' : '—'}</strong>
             <span>${newSkill ? 'NEW SKILL' : 'SKILL LEVELLED'}</span>
           </div>
 
-          <div>
+          <div class="reward-tile ${newCat ? 'earned' : ''}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
             <strong>${newCat ? '+1' : '—'}</strong>
             <span>${newCat ? 'NEW CATEGORY' : 'CATEGORY'}</span>
           </div>
@@ -1785,13 +1814,13 @@ function complete(id) {
 
           <div class="reflection-options" role="group" aria-label="How did it go?">
             ${[['Couldn\'t do it', 'COULDN’T DO IT'], ['Almost', 'ALMOST'], ['Nailed it', 'NAILED IT']]
-              .map(([v, l]) => `<button data-reflect="${esc(v)}" aria-pressed="${e.reflection === v}" class="${e.reflection === v ? 'active' : ''}">${l}</button>`)
+              .map(([v, l], i) => `<button data-reflect="${esc(v)}" aria-pressed="${e.reflection === v}" class="${e.reflection === v ? 'active' : ''}"><i class="rf-mark" aria-hidden="true">${i + 1}</i><span>${l}</span></button>`)
               .join('')}
           </div>
 
           <span class="eyebrow reflect-gap">WOULD YOU DO IT AGAIN?</span>
           <div class="reflection-options again-options" role="group" aria-label="Would you do it again?">
-            ${AGAIN.map(([v, l]) => `<button data-again="${v}" aria-pressed="${e.again === v}" class="${e.again === v ? 'active' : ''}">${l}</button>`).join('')}
+            ${AGAIN.map(([v, l], i) => `<button data-again="${v}" aria-pressed="${e.again === v}" class="${e.again === v ? 'active' : ''}"><i class="rf-mark" aria-hidden="true">${i + 1}</i><span>${l}</span></button>`).join('')}
           </div>
 
           <details class="reflect-note" ${e.surprise || e.learned ? 'open' : ''}>
@@ -2053,7 +2082,7 @@ function progress() {
           </div>
           ${(() => {
             const s = dailyStreak(state);
-            return s ? `<p class="daily-streak-line">🔥 ${s} day${s === 1 ? '' : 's'} in a row on the Daily SideQuest</p>` : '';
+            return streakBadge(s, 'full');
           })()}
         </div>
       </section>
@@ -2107,69 +2136,263 @@ function progress() {
   `;
 }
 
+/* ---------------- Community: avatars, post tiles, feeds ---------------- */
+const AVATAR_GLYPH = { sun: '✺', bolt: 'ϟ', leaf: '❦', wave: '≈', star: '★', moon: '☾' };
+const AVATARS = Object.keys(AVATAR_GLYPH);
+const avatarEl = (p, cls = '') =>
+  `<span class="avatar ${cls} av-${esc(p.avatar || 'none')}" aria-hidden="true">${AVATAR_GLYPH[p.avatar] || esc((p.displayName || p.username || '?').slice(0, 1).toUpperCase())}</span>`;
+const newFeed = () => ({ posts: [], next: null, loading: false, loaded: false, error: '' });
+const offlineMsg = 'You’re offline. Check your connection and try again.';
+
+function postTile(po, { author = true, remove = false } = {}) {
+  const q = questById(po.questId);
+  return `
+    <article class="showcase-tile showcase-post">
+      ${author ? `<a class="post-author" href="#/u/${esc(po.author.username)}">${avatarEl(po.author, 'avatar-xs')}<span><strong>${esc(po.author.displayName)}</strong> <small>@${esc(po.author.username)}</small></span></a>` : ''}
+      <div>
+        <div class="showcase-tile-icon" aria-hidden="true">${q ? icon(q) : '✳'}</div>
+        <h2>${esc(q ? q.title : 'A SideQuest')}</h2>
+        ${po.reflection ? `<span class="post-reflection">${esc(po.reflection)}</span>` : ''}
+        ${po.note ? `<p class="post-note">“${esc(po.note)}”</p>` : ''}
+      </div>
+      <span class="eyebrow">${q ? `${esc(q.skill)} · ` : ''}${new Date(po.completedAt).toLocaleDateString()}</span>
+      <div class="post-actions">
+        <button class="link-btn" data-act="share-post" data-u="${esc(po.author.username)}" data-q="${esc(po.questId)}">Share</button>
+        ${q ? `<a class="link-btn" href="#/quest/${esc(po.questId)}">Try it</a>` : ''}
+        ${remove ? `<button class="link-btn danger-link" data-act="showcase-unpublish" data-pid="${po.id}" data-q="${esc(po.questId)}">Unpublish</button>` : ''}
+      </div>
+    </article>`;
+}
+
+function feedBlock(f, key, emptyHtml, opts = {}) {
+  if (f.error && !f.posts.length)
+    return `<div class="panel panel-note"><p role="alert">${esc(f.error)}</p><button class="btn btn-dark btn-md" data-act="feed-retry" data-k="${key}">TRY AGAIN</button></div>`;
+  if (!f.loaded) return '<p class="muted" role="status">Loading…</p>';
+  if (!f.posts.length) return emptyHtml;
+  return `
+    <div class="showcase-grid">${f.posts.map((po) => postTile(po, { ...opts, remove: opts.remove ?? po.mine })).join('')}</div>
+    ${f.error ? `<p class="form-error" role="alert">${esc(f.error)} <button class="link-btn" data-act="feed-retry" data-k="${key}">Retry</button></p>` : ''}
+    ${f.next
+      ? `<div class="feed-more"><button class="btn btn-outline btn-lg" data-act="feed-more" data-k="${key}" ${f.loading ? 'disabled' : ''}>${f.loading ? 'LOADING…' : 'LOAD MORE'}</button></div>`
+      : '<p class="muted end-note">That’s everything so far.</p>'}`;
+}
+const feedFor = (key) => (key === 'profile' ? ui.profile.feed : ui.showcase[key]);
+
+async function loadFeed(feed, fetcher, { more = false } = {}) {
+  if (feed.loading) return;
+  feed.loading = true;
+  feed.error = '';
+  if (more) rerenderIfSafe();
+  const r = await fetcher(more ? feed.next : null);
+  feed.loading = false;
+  if (!r.ok) feed.error = r.status === 0 ? offlineMsg : r.data.error || 'Couldn’t load right now.';
+  else {
+    const seen = new Set(more ? feed.posts.map((x) => x.id) : []);
+    feed.posts = [...(more ? feed.posts : []), ...r.data.posts.filter((x) => !seen.has(x.id))];
+    feed.next = r.data.next;
+    feed.loaded = true;
+  }
+  rerenderIfSafe();
+}
+async function loadMine() {
+  const m = ui.showcase.mine;
+  if (m.loading) return;
+  await loadFeed(m, (c) => cloud.getShowcase({ mine: true, cursor: c }));
+  for (let i = 0; i < 10 && m.next && !m.error; i++) await loadFeed(m, (c) => cloud.getShowcase({ mine: true, cursor: c }), { more: true });
+}
+function ensureShowcase() {
+  if (!ui.backendChecked || !cloud.backend()) return;
+  const sc = ui.showcase;
+  if (sc.tab === 'community' && !sc.community.loaded && !sc.community.loading && !sc.community.error)
+    loadFeed(sc.community, (c) => cloud.getShowcase({ cursor: c }));
+  if (sc.tab === 'mine' && cloud.signedIn() && !sc.mine.loaded && !sc.mine.loading && !sc.mine.error) loadMine();
+}
+
 function showcase() {
-  const done = state.completed
-    .filter((c) => c.public)
-    .map((c) => ({
-      c,
-      q: questById(c.id)
-    }));
+  const sc = ui.showcase;
+  const be = cloud.backend();
+  const signed = cloud.signedIn();
+  const tabs = `
+    <div class="seg" role="tablist" aria-label="Showcase">
+      <button role="tab" aria-selected="${sc.tab === 'community'}" class="${sc.tab === 'community' ? 'active' : ''}" data-act="showcase-tab" data-v="community">COMMUNITY</button>
+      <button role="tab" aria-selected="${sc.tab === 'mine'}" class="${sc.tab === 'mine' ? 'active' : ''}" data-act="showcase-tab" data-v="mine">MY POSTS</button>
+    </div>`;
+  let body;
+  if (!ui.backendChecked) body = '<p class="muted" role="status">Looking for the SideQuest server…</p>';
+  else if (!be) body = unavailable('The community Showcase');
+  else if (sc.tab === 'community') {
+    body = feedBlock(sc.community, 'community', `
+      <div class="panel panel-note">
+        <span class="eyebrow">NOTHING HERE YET</span>
+        <h2>Nobody has shared a quest yet.</h2>
+        <p>Finish a quest, then publish it from <strong>My posts</strong>. You’ll be the first thing people see here.</p>
+        <button class="btn btn-dark btn-md" data-act="showcase-tab" data-v="mine">GO TO MY POSTS →</button>
+      </div>`);
+  } else if (!signed) body = needSignIn('Sharing to the Showcase');
+  else {
+    const m = sc.mine;
+    const published = new Set(m.posts.map((x) => x.questId));
+    const ready = m.loaded ? state.completed.filter((c) => !published.has(c.id) && questById(c.id)).sort((x, y) => (y.date || 0) - (x.date || 0)) : [];
+    body = `
+      <div class="panel panel-note">
+        <span class="eyebrow">YOU DECIDE WHAT’S PUBLIC</span>
+        <p>Only quests you publish here appear in the community. People see your display name, @username, the quest, and your “how did it go” answer. Your private notes and the rest of your progress are never shown.</p>
+      </div>
+      <h2 class="feed-title">PUBLISHED</h2>
+      ${feedBlock(m, 'mine', '<p class="muted">You haven’t published anything yet.</p>', { remove: true })}
+      ${ready.length ? `<h2 class="feed-title">READY TO SHARE</h2>
+        <div class="friend-list">${ready.map((c) => { const q = questById(c.id); return `
+          <div class="friend-row"><span><strong>${esc(q.title)}</strong> <small>${new Date(c.date).toLocaleDateString()}</small></span>
+          <button class="btn btn-dark btn-sm" data-act="showcase-publish" data-q="${esc(c.id)}" ${ui.showcase.busy === c.id ? 'disabled' : ''}>${ui.showcase.busy === c.id ? 'PUBLISHING…' : 'PUBLISH'}</button></div>`; }).join('')}</div>` : ''}`;
+  }
 
   return `
     <div class="list-page">
       <div class="page-wrap-wide">
         <section class="page-heading">
-          <span class="eyebrow">
-            THE SHOWCASE
-          </span>
-
-          <h1>
-            THINGS PEOPLE<br>
-            <em>ACTUALLY DID.</em>
-          </h1>
-
-          <p>
-            Small skills, strange experiments and tiny wins
-            worth remembering.
-          </p>
+          <span class="eyebrow">THE SHOWCASE</span>
+          <h1>THINGS PEOPLE<br><em>ACTUALLY DID.</em></h1>
+          <p>Small skills, strange experiments and tiny wins worth remembering.</p>
         </section>
-
-        <div class="showcase-grid">
-          ${
-            done.length
-              ? done
-                  .map(
-                    ({ c, q }) => `
-                      <article class="showcase-tile">
-                        <div>
-                          <span class="eyebrow">
-                            SIDEQUEST CLEAR / @you
-                          </span>
-
-                          <div class="showcase-tile-icon">
-                            ${icon(q)}
-                          </div>
-
-                          <h2>
-                            ${esc(q.title)}
-                          </h2>
-                        </div>
-
-                        <span class="eyebrow">
-                          ${q.skill} ·
-                          ${new Date(c.date).toLocaleDateString()}
-                        </span>
-                      </article>
-                    `
-                  )
-                  .join('')
-              : '<p class="muted">Your public completions will appear here. Finish a quest and add it to the showcase.</p>'
-          }
-        </div>
+        <div class="feed-toolbar">${tabs}${be ? '<button class="btn btn-outline btn-sm" data-act="feed-refresh">REFRESH ↻</button>' : ''}</div>
+        ${body}
       </div>
-    </div>
-  `;
+    </div>`;
 }
+
+/* ---------------- Dedicated login / signup ---------------- */
+function validateAuth(signup, d) {
+  const e = {};
+  const u = String(d.username || '').trim().toLowerCase();
+  if (!u) e.username = 'Enter your username.';
+  else if (signup && !/^[a-z0-9_]{3,20}$/.test(u)) e.username = 'Use 3–20 characters: letters, numbers or underscores.';
+  const pw = String(d.password || '');
+  if (!pw) e.password = signup ? 'Choose a password.' : 'Enter your password.';
+  else if (signup && pw.length < 8) e.password = 'Use at least 8 characters.';
+  else if (pw.length > 128) e.password = 'That’s a bit long. Keep it under 128 characters.';
+  if (signup) {
+    if (!d.confirm) e.confirm = 'Type the password again.';
+    else if (d.confirm !== pw) e.confirm = 'The passwords don’t match.';
+  }
+  return e;
+}
+
+const field = ({ id, name, label, type = 'text', value = '', autocomplete = 'off', err = '', extra = '', hint = '' }) => `
+  <div class="field ${err ? 'has-error' : ''}">
+    <label for="${id}">${label}</label>
+    <div class="field-input">
+      <input id="${id}" name="${name}" type="${type}" value="${esc(value)}" autocomplete="${autocomplete}" ${err ? `aria-invalid="true" aria-describedby="${id}-err"` : hint ? `aria-describedby="${id}-hint"` : ''} ${extra} />
+      ${type === 'password' ? '<button type="button" class="pw-toggle" data-act="pw-toggle" aria-pressed="false" aria-label="Show password">SHOW</button>' : ''}
+    </div>
+    ${hint && !err ? `<small class="hint" id="${id}-hint">${hint}</small>` : ''}
+    ${err ? `<small class="field-error" id="${id}-err" role="alert">${esc(err)}</small>` : ''}
+  </div>`;
+
+function authPage(mode) {
+  const signup = mode === 'signup';
+  const a = ui.account;
+  const err = a.errors || {};
+  const guest = `
+    <div class="auth-guest">
+      <a class="btn btn-outline btn-lg" href="#/">CONTINUE AS GUEST</a>
+      <p class="muted">No account needed. Your quests stay on this device, and you can create an account later without losing anything.</p>
+    </div>`;
+  let panel;
+  if (!ui.backendChecked) panel = '<div class="panel"><p class="muted" role="status">Looking for the SideQuest server…</p></div>';
+  else if (!cloud.backend()) panel = `${unavailable('Accounts')}${guest}`;
+  else if (cloud.signedIn()) {
+    const u = cloud.getAccount().user;
+    panel = `<div class="panel"><span class="eyebrow">YOU’RE SIGNED IN</span><h2>Hi, ${esc(u.displayName)}.</h2>
+      <div class="panel-actions"><a class="btn btn-dark btn-lg" href="#/">BACK TO SIDEQUEST →</a><a class="btn btn-outline btn-lg" href="#/account">MY ACCOUNT</a></div></div>`;
+  } else {
+    panel = `
+      <form class="panel auth-form" data-form="auth" data-mode="${signup ? 'signup' : 'signin'}" novalidate>
+        <h2>${signup ? 'Create your account' : 'Welcome back'}</h2>
+        ${a.error ? `<p class="form-error" role="alert">${esc(a.error)}</p>` : ''}
+        ${field({ id: 'au', name: 'username', label: 'Username', value: a.form?.username || '', autocomplete: 'username', err: err.username, extra: 'autocapitalize="none" spellcheck="false" maxlength="20"', hint: signup ? '3–20 characters: a–z, 0–9 and _. Friends find you by this.' : '' })}
+        ${signup ? field({ id: 'ad', name: 'displayName', label: 'Display name <span class="muted">(optional)</span>', value: a.form?.displayName || '', autocomplete: 'nickname', err: err.displayName, extra: 'maxlength="30"' }) : ''}
+        ${field({ id: 'ap', name: 'password', label: 'Password', type: 'password', autocomplete: signup ? 'new-password' : 'current-password', err: err.password, hint: signup ? 'At least 8 characters.' : '' })}
+        ${signup ? field({ id: 'ac', name: 'confirm', label: 'Confirm password', type: 'password', autocomplete: 'new-password', err: err.confirm }) : ''}
+        <button class="btn btn-dark btn-xl" type="submit" ${a.busy ? 'disabled aria-busy="true"' : ''}>${a.busy ? 'ONE SEC…' : signup ? 'CREATE ACCOUNT →' : 'SIGN IN →'}</button>
+        <p class="auth-switch">${signup ? 'Already have an account? <a href="#/login">Sign in</a>' : 'New here? <a href="#/signup">Create an account</a>'}</p>
+        <p class="muted">${signup ? 'There’s no email on SideQuest, so there’s no password reset yet. Keep your password somewhere safe.' : 'Everything on this device is kept and merged in. Nothing gets overwritten.'}</p>
+      </form>
+      ${guest}`;
+  }
+  return `
+    <div class="auth-page">
+      <aside class="auth-aside">
+        <a class="auth-back" href="#/">← Back to SideQuest</a>
+        <span class="eyebrow">${signup ? 'JOIN IN' : 'WELCOME BACK'}</span>
+        <h1>${signup ? 'KEEP YOUR<br>STORY<span>.</span>' : 'PICK UP<br>WHERE YOU<br>LEFT OFF<span>.</span>'}</h1>
+        <p>${signup ? 'Sync your quests across devices, add friends, challenge them and share what you did.' : 'Your quests, your streak and your friends are waiting.'}</p>
+      </aside>
+      <section class="auth-main">${panel}</section>
+    </div>`;
+}
+
+/* ---------------- Public profile ---------------- */
+function profilePage(username) {
+  const p = ui.profile;
+  let body;
+  if (!ui.backendChecked || p.status === 'idle' || p.status === 'loading') body = '<p class="muted" role="status">Loading profile…</p>';
+  else if (!cloud.backend()) body = unavailable('Public profiles');
+  else if (p.status === 'missing')
+    body = `<div class="panel panel-note"><span class="eyebrow">NOT FOUND</span><h2>There’s no SideQuester called @${esc(username)}.</h2><p>They may have changed their account, or the link might have a typo.</p><a class="btn btn-dark btn-md" href="#/showcase">BROWSE THE SHOWCASE →</a></div>`;
+  else if (p.status === 'private')
+    body = `<div class="panel panel-note"><span class="eyebrow">PRIVATE PROFILE</span><h2>@${esc(username)} keeps their profile private.</h2><a class="btn btn-dark btn-md" href="#/showcase">BROWSE THE SHOWCASE →</a></div>`;
+  else if (p.status === 'error')
+    body = `<div class="panel panel-note"><p role="alert">${esc(p.error)}</p><button class="btn btn-dark btn-md" data-act="profile-retry">TRY AGAIN</button></div>`;
+  else {
+    const pr = p.data;
+    const f = p.friendship;
+    const u = esc(pr.username);
+    const signed = cloud.signedIn();
+    let friendBtns = '';
+    if (f === 'self') friendBtns = '<a class="btn btn-outline btn-md" href="#/account">EDIT MY PROFILE</a>';
+    else if (!signed) friendBtns = `<a class="btn btn-dark btn-md" href="#/login" data-act="set-next" data-next="/u/${u}">SIGN IN TO ADD FRIEND</a>`;
+    else if (f === 'none') friendBtns = `<button class="btn btn-dark btn-md" data-act="pf-add" data-u="${u}" ${p.busy ? 'disabled' : ''}>ADD FRIEND</button>`;
+    else if (f === 'outgoing') friendBtns = `<span class="pill">REQUEST SENT</span><button class="btn btn-outline btn-md" data-act="pf-cancel" data-u="${u}">CANCEL REQUEST</button>`;
+    else if (f === 'incoming') friendBtns = `<button class="btn btn-dark btn-md" data-act="pf-respond" data-u="${u}" data-v="1">ACCEPT REQUEST</button><button class="btn btn-outline btn-md" data-act="pf-respond" data-u="${u}" data-v="0">DECLINE</button>`;
+    else if (f === 'friends') friendBtns = `<span class="pill">FRIENDS ✓</span><a class="btn btn-lime btn-md" href="#/challenge/new" data-act="chal-friend" data-u="${u}">CHALLENGE</a><button class="link-btn danger-link" data-act="pf-remove" data-u="${u}">Remove friend</button>`;
+    body = `
+      <section class="pp-hero">
+        ${avatarEl(pr, 'avatar-xl')}
+        <div>
+          <h1>${esc(pr.displayName)}</h1>
+          <p class="muted">@${u} · joined ${new Date(pr.joined).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</p>
+          <p class="pp-bio">${pr.bio ? esc(pr.bio) : '<span class="muted">No bio yet.</span>'}</p>
+          <p class="pp-stats"><strong>${pr.stats.shared}</strong> quest${pr.stats.shared === 1 ? '' : 's'} shared</p>
+        </div>
+      </section>
+      <div class="pp-actions">${friendBtns}
+        <button class="btn btn-outline btn-md" data-act="share-profile" data-u="${u}" data-n="${esc(pr.displayName)}">SHARE PROFILE</button>
+        ${signed && f !== 'self' ? `<button class="link-btn" data-act="pf-report" data-u="${u}">Report</button><button class="link-btn danger-link" data-act="pf-block" data-u="${u}">Block</button>` : ''}
+      </div>
+      <h2 class="feed-title">SHARED QUESTS</h2>
+      ${feedBlock(p.feed, 'profile', `<p class="muted">${f === 'self' ? 'You haven’t published anything yet. Share a finished quest from the Showcase page.' : `${esc(pr.displayName)} hasn’t shared anything yet.`}</p>`, { author: false, remove: f === 'self' })}`;
+  }
+  return `<div class="list-page profile-page"><div class="page-wrap-wide"><a class="auth-back" href="#/showcase">← Showcase</a>${body}</div></div>`;
+}
+
+function ensureProfile(username) {
+  if (ui.profile.username !== username) ui.profile = { username, status: 'idle', data: null, friendship: 'none', feed: newFeed(), busy: false };
+  if (!ui.backendChecked || !cloud.backend()) return;
+  if (ui.profile.status === 'idle') loadProfile(username);
+}
+async function loadProfile(username) {
+  const p = ui.profile;
+  p.status = 'loading';
+  const r = await cloud.getProfile(username);
+  if (ui.profile !== p) return;                       // navigated elsewhere meanwhile
+  if (r.ok) { p.status = 'ok'; p.data = r.data.profile; p.friendship = r.data.friendship; }
+  else if (r.status === 404) p.status = 'missing';
+  else if (r.status === 403 && r.data.code === 'private') p.status = 'private';
+  else { p.status = 'error'; p.error = r.status === 0 ? offlineMsg : r.data.error || 'Couldn’t load this profile.'; }
+  rerenderIfSafe();
+  if (p.status === 'ok') loadFeed(p.feed, (c) => cloud.getProfilePosts(username, c));
+}
+const reloadProfile = () => { ui.profile = { username: '', status: 'idle' }; render(); };
 
 /* ---------------- Profile hub (tabs) ---------------- */
 function profileTabs(active) {
@@ -2193,7 +2416,12 @@ function profileTabs(active) {
     </nav>`;
 }
 
-const unavailable = (what) => `
+const unavailable = (what) => navigator.onLine === false ? `
+  <div class="panel panel-note">
+    <span class="eyebrow">OFFLINE</span>
+    <h2>${what} needs a connection.</h2>
+    <p>You’re offline right now. Your quests are saved on this device and everything else keeps working. This will come back when you’re online again.</p>
+  </div>` : `
   <div class="panel panel-note">
     <span class="eyebrow">☁ NOT CONNECTED</span>
     <h2>${what} needs the SideQuest server.</h2>
@@ -2210,7 +2438,8 @@ const needSignIn = (what) => `
     <span class="eyebrow">👤 SIGN IN</span>
     <h2>${what} needs an account.</h2>
     <p>Create a free account to sync your quests across devices and challenge friends. Your local progress is kept and merged in.</p>
-    <a class="btn btn-dark btn-lg" href="#/account">SIGN IN OR CREATE ACCOUNT →</a>
+    <a class="btn btn-dark btn-lg" href="#/login" data-act="set-next" data-next="${route()}">SIGN IN</a>
+    <a class="btn btn-outline btn-lg" href="#/signup" data-act="set-next" data-next="${route()}">CREATE ACCOUNT</a>
   </div>`;
 
 /* ---------------- Account ---------------- */
@@ -2254,20 +2483,44 @@ function accountView() {
     body = `
       <div class="panel">
         <div class="profile-card">
-          <span class="avatar" aria-hidden="true">${esc((u.displayName || u.username).slice(0, 1).toUpperCase())}</span>
+          ${avatarEl(u, 'avatar-lg')}
           <div>
             <h2>${esc(u.displayName)}</h2>
-            <p class="muted">@${esc(u.username)}</p>
+            <p class="muted">@${esc(u.username)} · ${u.profilePublic === false ? 'private profile' : 'public profile'}</p>
           </div>
         </div>
-        <form class="form-row" data-form="profile-name">
-          <label for="dn">Display name</label>
-          <div class="inline-form">
-            <input id="dn" name="displayName" maxlength="30" value="${esc(u.displayName)}" autocomplete="nickname" />
-            <button class="btn btn-outline btn-md" type="submit">SAVE</button>
+        <div class="panel-actions">
+          <a class="btn btn-outline btn-md" href="#/u/${esc(u.username)}">VIEW PUBLIC PROFILE</a>
+          <button class="btn btn-outline btn-md" data-act="share-profile" data-u="${esc(u.username)}" data-n="${esc(u.displayName)}">SHARE PROFILE</button>
+        </div>
+        <form class="auth-form profile-form" data-form="profile-edit">
+          ${field({ id: 'dn', name: 'displayName', label: 'Display name', value: u.displayName, autocomplete: 'nickname', extra: 'maxlength="30" required' })}
+          <div class="field">
+            <label for="bio">Bio <span class="muted">(optional, 160 characters)</span></label>
+            <div class="field-input"><textarea id="bio" name="bio" maxlength="160" rows="3" placeholder="What are you into?">${esc(u.bio || '')}</textarea></div>
           </div>
+          <fieldset class="avatar-pick">
+            <legend>Avatar</legend>
+            <label class="pick ${!u.avatar ? 'active' : ''}"><input type="radio" name="avatar" value="" ${!u.avatar ? 'checked' : ''} />Initial</label>
+            ${AVATARS.map((k) => `<label class="pick ${u.avatar === k ? 'active' : ''}"><input type="radio" name="avatar" value="${k}" ${u.avatar === k ? 'checked' : ''} /><span aria-hidden="true">${AVATAR_GLYPH[k]}</span> ${k}</label>`).join('')}
+          </fieldset>
+          <label class="check-row"><input type="checkbox" name="profilePublic" ${u.profilePublic === false ? '' : 'checked'} /> <span><strong>Public profile.</strong> Anyone with your link can see your name, bio and the quests you publish. Turn it off to hide your profile and your Showcase posts.</span></label>
+          <button class="btn btn-dark btn-md" type="submit">SAVE PROFILE</button>
         </form>
       </div>
+
+      <div class="panel">
+        <span class="eyebrow">PASSWORD</span>
+        <form class="auth-form" data-form="password" novalidate>
+          ${field({ id: 'pc', name: 'current', label: 'Current password', type: 'password', autocomplete: 'current-password' })}
+          ${field({ id: 'pn', name: 'next', label: 'New password', type: 'password', autocomplete: 'new-password', hint: 'At least 8 characters. Changing it signs you out on other devices.' })}
+          ${field({ id: 'pm', name: 'confirm', label: 'Confirm new password', type: 'password', autocomplete: 'new-password' })}
+          ${a.pwError ? `<p class="form-error" role="alert">${esc(a.pwError)}</p>` : ''}
+          <button class="btn btn-outline btn-md" type="submit">CHANGE PASSWORD</button>
+        </form>
+      </div>
+
+      ${ui.blocks && ui.blocks.length ? `<div class="panel"><span class="eyebrow">BLOCKED PEOPLE</span>${ui.blocks.map((b) => `<div class="friend-row"><span>${esc(b.displayName)} <small>@${esc(b.username)}</small></span><button class="btn btn-outline btn-sm" data-act="unblock" data-u="${esc(b.username)}">UNBLOCK</button></div>`).join('')}</div>` : ''}
 
       <div class="panel">
         <span class="eyebrow">☁ CLOUD SYNC</span>
@@ -2292,28 +2545,15 @@ function accountView() {
         }
       </div>`;
   } else {
-    const signup = a.mode === 'signup';
     body = `
-      <div class="panel">
-        <div class="seg" role="tablist">
-          <button role="tab" aria-selected="${!signup}" class="${!signup ? 'active' : ''}" data-act="account-tab" data-v="signin">SIGN IN</button>
-          <button role="tab" aria-selected="${signup}" class="${signup ? 'active' : ''}" data-act="account-tab" data-v="signup">CREATE ACCOUNT</button>
+      <div class="panel panel-note">
+        <span class="eyebrow">YOU’RE PLAYING AS A GUEST</span>
+        <h2>Everything works without an account.</h2>
+        <p>Create one to sync across devices, add friends, take on challenges and share to the community Showcase. Your quests on this device are kept and merged in.</p>
+        <div class="panel-actions">
+          <a class="btn btn-dark btn-lg" href="#/signup">CREATE ACCOUNT →</a>
+          <a class="btn btn-outline btn-lg" href="#/login">SIGN IN</a>
         </div>
-        <form class="auth-form" data-form="auth" novalidate>
-          <label for="au">Username</label>
-          <input id="au" name="username" value="${esc(a.form?.username || '')}" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="20" required />
-          ${signup ? `<label for="ad">Display name <span class="muted">(optional)</span></label>
-                      <input id="ad" name="displayName" value="${esc(a.form?.displayName || '')}" maxlength="30" autocomplete="nickname" />` : ''}
-          <label for="ap">Password</label>
-          <input id="ap" name="password" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}" minlength="8" required />
-          ${a.error ? `<p class="form-error" role="alert">${esc(a.error)}</p>` : ''}
-          <button class="btn btn-dark btn-xl" type="submit" ${a.busy ? 'disabled' : ''}>
-            ${a.busy ? 'ONE SEC…' : signup ? 'CREATE ACCOUNT →' : 'SIGN IN →'}
-          </button>
-        </form>
-        <p class="muted">${signup
-          ? 'Usernames are 3–20 characters (a–z, 0–9, _). Passwords need 8+. There’s no email, so there’s no password reset yet. Keep it somewhere safe.'
-          : 'Everything on this device is kept and merged in. Nothing gets overwritten.'}</p>
       </div>`;
   }
 
@@ -2379,8 +2619,11 @@ function settingsView() {
         ${toggle('reminders', 'Quest reminders', 'If you start a quest and don’t finish it.')}
         ${toggle('followups', 'Follow-ups', 'A gentle “ready for another?” the day after you complete one.')}
         <div class="switch-row time-row">
-          <span><strong>Daily reminder time</strong><small>Local time. We’ll never send outside 8am–9pm.</small></span>
-          <input type="time" data-notif-time value="${esc(n.time)}" ${on ? '' : 'disabled'} aria-label="Daily reminder time" />
+          <span><strong>Daily reminder time</strong><small>Local time, between 8:00am and 8:59pm. Saved: <b data-notif-time-saved>${esc(n.time)}</b></small></span>
+          <div class="time-edit">
+            <input type="time" id="notif-time" data-notif-time value="${esc(n.time)}" min="08:00" max="20:59" step="60" aria-label="Daily reminder time" />
+            <button class="btn btn-dark btn-sm" data-act="notif-time-save" disabled>SAVE</button>
+          </div>
         </div>
         <button class="btn btn-outline btn-md" data-act="notif-test" ${on ? '' : 'disabled'}>SEND A TEST NOTIFICATION</button>
       </div>`;
@@ -2413,8 +2656,10 @@ function challengeCard(c) {
     pending: c.mine === 'sender' ? `Waiting for ${personName(other)} to accept` : `${personName(other)} challenged you`,
     accepted: 'In progress',
     completed: '🎉 You both did it',
-    declined: 'Declined'
-  }[c.status];
+    declined: 'Declined',
+    cancelled: 'Cancelled',
+    expired: 'Expired'
+  }[c.status] || 'Challenge';
 
   let actions = '';
   if (c.status === 'pending' && c.mine === 'recipient') {
@@ -2425,6 +2670,10 @@ function challengeCard(c) {
   } else if (c.status === 'completed' || (c.status === 'accepted' && meDone)) {
     actions = `<button class="btn btn-outline btn-md" data-completion-card="${q.id}">VIEW MY CARD</button>`;
   }
+
+  if (c.mine === 'sender' && ['pending', 'accepted'].includes(c.status))
+    actions += ` <button class="link-btn danger-link" data-act="chal-cancel" data-id="${c.id}">Cancel challenge</button>`;
+  actions += ` <button class="link-btn" data-act="share-quest" data-q="${q.id}">Share quest</button>`;
 
   return `
     <article class="chal-card ${c.status}">
@@ -2457,6 +2706,7 @@ function challengesView() {
     const active = ch.filter((c) => c.status === 'accepted');
     const sent = ch.filter((c) => c.status === 'pending' && c.mine === 'sender');
     const done = ch.filter((c) => c.status === 'completed');
+    const past = ch.filter((c) => ['declined', 'cancelled', 'expired'].includes(c.status));
     const fr = n.friends || { friends: [], incoming: [], outgoing: [] };
     const section = (title, items, empty = '') =>
       items.length ? `<section class="list-section"><div class="list-heading"><h2>${title}</h2><span class="eyebrow">${items.length}</span></div>${items.map(challengeCard).join('')}</section>` : empty;
@@ -2475,6 +2725,7 @@ function challengesView() {
       ${section('IN PROGRESS', active)}
       ${section('SENT', sent)}
       ${section('COMPLETED', done)}
+      ${section('PAST', past)}
       ${!ch.length && !n.loading ? '<p class="muted">No challenges yet. Add a friend, then send the first one.</p>' : ''}
 
       <section class="list-section">
@@ -2482,7 +2733,7 @@ function challengesView() {
 
         ${fr.incoming.map((p) => `
           <div class="friend-row">
-            <span><strong>${personName(p)}</strong> <small>@${esc(p.username)} wants to be friends</small></span>
+            <span>${avatarEl(p, 'avatar-xs')}<a href="#/u/${esc(p.username)}"><strong>${personName(p)}</strong></a> <small>@${esc(p.username)} wants to be friends</small></span>
             <span>
               <button class="btn btn-dark btn-sm" data-act="friend-respond" data-u="${esc(p.username)}" data-v="1">ACCEPT</button>
               <button class="btn btn-outline btn-sm" data-act="friend-respond" data-u="${esc(p.username)}" data-v="0">DECLINE</button>
@@ -2491,7 +2742,7 @@ function challengesView() {
 
         ${fr.friends.map((p) => `
           <div class="friend-row">
-            <span><strong>${personName(p)}</strong> <small>@${esc(p.username)}</small></span>
+            <span>${avatarEl(p, 'avatar-xs')}<a href="#/u/${esc(p.username)}"><strong>${personName(p)}</strong></a> <small>@${esc(p.username)}</small></span>
             <span>
               <a class="btn btn-outline btn-sm" href="#/challenge/new" data-act="chal-friend" data-u="${esc(p.username)}">CHALLENGE</a>
               <button class="link-btn danger-link" data-act="friend-remove" data-u="${esc(p.username)}">Remove</button>
@@ -2499,7 +2750,7 @@ function challengesView() {
           </div>`).join('')}
 
         ${fr.outgoing.map((p) => `
-          <div class="friend-row muted"><span>${personName(p)} <small>@${esc(p.username)} · request sent</small></span></div>`).join('')}
+          <div class="friend-row muted"><span>${avatarEl(p, 'avatar-xs')}<a href="#/u/${esc(p.username)}">${personName(p)}</a> <small>@${esc(p.username)} · request sent</small></span><button class="link-btn" data-act="friend-cancel" data-u="${esc(p.username)}">Cancel request</button></div>`).join('')}
 
         ${!fr.friends.length && !fr.incoming.length && !fr.outgoing.length ? '<p class="muted">No friends yet.</p>' : ''}
 
@@ -2601,6 +2852,12 @@ const rerenderIfSafe = () => {
 
 const localHasData = () => state.saved.length || state.completed.length;
 
+async function loadBlocks() {
+  ui.blocks = [];
+  const r = await cloud.getBlocks();
+  if (r.ok) { ui.blocks = r.data.blocked; if (r.data.blocked.length) rerenderIfSafe(); }
+}
+
 async function loadNet({ silent = false } = {}) {
   if (!cloud.signedIn() || !cloud.backend()) {
     ui.net = { friends: null, challenges: null, waiting: 0, loading: false, error: '' };
@@ -2673,18 +2930,28 @@ function armNotifications() {
 cloud.initSync({
   get: () => state,
   apply: (merged) => {
+    const np = merged.notifPrefs;
     Object.assign(state, merged);
+    delete state.notifPrefs;
+    if (np && (np.at || 0) >= (state.prefs.notifAt || 0)) {
+      ['daily', 'challenges', 'reminders', 'followups'].forEach((k) => { state.prefs.notif[k] = !!np[k]; });
+      if (/^\d\d:\d\d$/.test(np.time)) state.prefs.notif.time = np.time;
+      state.prefs.notifAt = np.at || 0;
+    }
     persist();
     ui.home = null;
   },
   status: (s) => {
     ui.sync = { state: s.state === 'signedout' ? 'idle' : s.state, last: cloud.syncInfo.last };
     if (s.state === 'signedout') ui.net = { friends: null, challenges: null, waiting: 0, loading: false, error: '' };
-    if (['/account', '/settings'].includes(route())) rerenderIfSafe();
+    if (['/account', '/settings', '/login', '/signup', '/showcase', '/challenges'].includes(route()) || route().startsWith('/u/')) rerenderIfSafe();
   }
 });
 
 async function afterAuth(user) {
+  ui.showcase.mine = newFeed();
+  ui.profile = { username: '', status: 'idle' };
+  ui.blocks = null;
   const last = localStorage.getItem('sidequest-last-user');
   if (last && last !== user.username && localHasData()) {
     ui.account.pending = user.username;
@@ -2751,6 +3018,29 @@ const actions = {
     else if (r === 'failed') toast('Couldn’t share from here. Try Save card image.');
   },
 
+  'notif-time-save': async () => {
+    const input = $('#notif-time');
+    const v = input?.value || '';
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) { toast('Pick a valid time first.'); return; }
+    if (v < '08:00' || v > '20:59') { toast('Reminders only go out between 8:00am and 8:59pm.'); return; }
+    state.prefs.notif.time = v;
+    state.prefs.notifAt = Date.now();
+    save();                                              // local + account state (syncs across devices)
+    const synced = await notify.syncPrefs(state.prefs.notif); // background scheduler, when push is active
+    toast(
+      cloud.signedIn() && cloud.backend() ? `Reminder time saved: ${v}.` : `Reminder time saved on this device: ${v}.`
+    );
+    render({ keepFocus: false });
+  },
+
+  abandon: () => {
+    const id = state.active?.id || route().split('/')[2];
+    state.active = null;
+    save();
+    toast('Quest dropped. It’ll be here if you change your mind.');
+    go(`/quest/${id}`);
+  },
+
   'notif-enable': () => enableNotifications(),
   'notif-later': () => { state.prefs.asked = Date.now(); persist(); render(); },
   'notif-disable': async () => {
@@ -2771,7 +3061,10 @@ const actions = {
     await notify.disable();
     state.prefs.notif.enabled = false;
     await cloud.signOut();
-    ui.account = { ...ui.account, mode: 'signin', error: '', form: null, confirmDelete: false, pending: null };
+    ui.showcase.mine = newFeed();
+    ui.profile = { username: '', status: 'idle' };
+    ui.blocks = null;
+    ui.account = { ...ui.account, mode: 'signin', error: '', errors: {}, form: null, confirmDelete: false, pending: null };
     persist();
     toast('Signed out. Your quests stay on this device.');
     render();
@@ -2793,6 +3086,134 @@ const actions = {
     await cloud.syncNow({ mode: 'cloud' });
     loadNet();
     render();
+  },
+
+  'pw-toggle': (el) => {
+    const input = el.parentElement.querySelector('input');
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    el.textContent = show ? 'HIDE' : 'SHOW';
+    el.setAttribute('aria-pressed', String(show));
+    el.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  },
+  'set-next': (el) => { ui.account.next = el.dataset.next || ''; ui.account.error = ''; ui.account.errors = {}; },
+
+  'showcase-tab': (el) => { ui.showcase.tab = el.dataset.v; render(); },
+  'feed-refresh': () => { ui.showcase.community = newFeed(); ui.showcase.mine = newFeed(); render(); },
+  'feed-retry': (el) => {
+    if (el.dataset.k === 'profile') { reloadProfile(); return; }
+    ui.showcase[el.dataset.k].error = '';
+    ui.showcase[el.dataset.k].loaded = ui.showcase[el.dataset.k].posts.length > 0;
+    render();
+  },
+  'feed-more': (el) => {
+    const k = el.dataset.k;
+    const f = feedFor(k);
+    const fetcher = k === 'profile' ? (c) => cloud.getProfilePosts(ui.profile.username, c)
+      : (c) => cloud.getShowcase({ mine: k === 'mine', cursor: c });
+    return loadFeed(f, fetcher, { more: true });
+  },
+  'showcase-publish': async (el) => {
+    const id = el.dataset.q;
+    if (ui.showcase.busy) return;
+    ui.showcase.busy = id;
+    render({ keepFocus: true });
+    const r = await cloud.publishPost(id);
+    ui.showcase.busy = null;
+    if (r.ok) {
+      const c = entryFor(id); if (c) { c.public = true; save(); }
+      ui.showcase.mine.posts = [r.data.post, ...ui.showcase.mine.posts.filter((x) => x.id !== r.data.post.id)];
+      ui.showcase.community = newFeed();
+      toast('Published to the Showcase.');
+    } else toast(r.status === 0 ? offlineMsg : r.data.error || 'Couldn’t publish.');
+    render({ keepFocus: true });
+  },
+  'showcase-unpublish': async (el) => {
+    if (!confirm('Remove this from the Showcase? You can publish it again later.')) return;
+    const r = await cloud.unpublishPost(el.dataset.pid);
+    if (!r.ok && r.status !== 404) { toast(r.status === 0 ? offlineMsg : r.data.error || 'Couldn’t remove it.'); return; }
+    const c = entryFor(el.dataset.q); if (c) { c.public = false; save(); }
+    const gone = (x) => String(x.id) !== String(el.dataset.pid);
+    ui.showcase.mine.posts = ui.showcase.mine.posts.filter(gone);
+    ui.showcase.community.posts = ui.showcase.community.posts.filter(gone);
+    if (ui.profile.feed) ui.profile.feed.posts = ui.profile.feed.posts.filter(gone);
+    if (ui.profile.data) ui.profile.data.stats.shared = Math.max(0, ui.profile.data.stats.shared - 1);
+    toast('Removed from the Showcase.');
+    render({ keepFocus: true });
+  },
+
+  'share-profile': async (el) => {
+    const m = shareMessage(await shareLink({ title: `${el.dataset.n} on SideQuest`, text: `Check out ${el.dataset.n} (@${el.dataset.u}) on SideQuest`, url: profileUrl(el.dataset.u) }));
+    if (m) toast(m);
+  },
+  'share-post': async (el) => {
+    const q = questById(el.dataset.q);
+    const m = shareMessage(await shareLink({ title: 'A SideQuest worth seeing', text: `@${el.dataset.u} did: ${q ? q.title : 'a SideQuest'}`, url: profileUrl(el.dataset.u) }));
+    if (m) toast(m);
+  },
+  'share-quest': async (el) => {
+    const q = questById(el.dataset.q);
+    const m = shareMessage(await shareLink({ title: q.mystery ? 'A Mystery SideQuest' : q.title, text: q.mystery ? 'Try this Mystery SideQuest' : `Try this SideQuest: ${q.title}`, url: questUrl(q.id) }));
+    if (m) toast(m);
+  },
+
+  'profile-retry': () => reloadProfile(),
+  'pf-add': async (el) => {
+    ui.profile.busy = true; render({ keepFocus: true });
+    const r = await cloud.requestFriend(el.dataset.u);
+    toast(r.ok ? (r.data.status === 'accepted' ? 'You’re friends now!' : 'Friend request sent.') : r.status === 0 ? offlineMsg : r.data.error || 'Couldn’t send.');
+    loadNet({ silent: true });
+    reloadProfile();
+  },
+  'pf-cancel': async (el) => {
+    const r = await cloud.cancelFriendRequest(el.dataset.u);
+    toast(r.ok ? 'Request cancelled.' : r.data.error || 'Couldn’t cancel.');
+    loadNet({ silent: true });
+    reloadProfile();
+  },
+  'pf-respond': async (el) => {
+    const r = await cloud.respondFriend(el.dataset.u, el.dataset.v === '1');
+    toast(r.ok ? (el.dataset.v === '1' ? 'You’re friends now!' : 'Request declined.') : r.data.error || 'Something went wrong.');
+    loadNet({ silent: true });
+    reloadProfile();
+  },
+  'pf-remove': async (el) => {
+    if (!confirm(`Remove @${el.dataset.u}? Open challenges with them will be cancelled.`)) return;
+    const r = await cloud.removeFriend(el.dataset.u);
+    toast(r.ok ? 'Friend removed.' : r.data.error || 'Something went wrong.');
+    loadNet({ silent: true });
+    reloadProfile();
+  },
+  'pf-block': async (el) => {
+    if (!confirm(`Block @${el.dataset.u}? Your friendship (if any) ends, open challenges are cancelled, and neither of you will see the other.`)) return;
+    const r = await cloud.blockUser(el.dataset.u);
+    if (!r.ok) { toast(r.data.error || 'Couldn’t block.'); return; }
+    toast(`Blocked @${el.dataset.u}.`);
+    ui.blocks = null; ui.showcase.community = newFeed();
+    loadNet({ silent: true });
+    go('/showcase');
+  },
+  'pf-report': async (el) => {
+    const reason = prompt(`Report @${el.dataset.u}. What’s wrong? (optional)`);
+    if (reason === null) return;
+    const r = await cloud.reportUser(el.dataset.u, reason);
+    toast(r.ok ? 'Thanks. We’ve recorded your report.' : r.data.error || 'Couldn’t send the report.');
+  },
+  unblock: async (el) => {
+    const r = await cloud.unblockUser(el.dataset.u);
+    toast(r.ok ? `Unblocked @${el.dataset.u}.` : r.data.error || 'Couldn’t unblock.');
+    ui.blocks = null; loadBlocks(); render({ keepFocus: true });
+  },
+  'friend-cancel': async (el) => {
+    const r = await cloud.cancelFriendRequest(el.dataset.u);
+    if (!r.ok) toast(r.data.error || 'Something went wrong.');
+    await loadNet({ silent: true });
+  },
+  'chal-cancel': async (el) => {
+    if (!confirm('Cancel this challenge?')) return;
+    const r = await cloud.cancelChallenge(el.dataset.id);
+    if (!r.ok) toast(r.data.error || 'Couldn’t cancel.');
+    await loadNet({ silent: true });
   },
 
   'friend-respond': async (el) => {
@@ -2877,18 +3298,20 @@ document.addEventListener('change', async (e) => {
   const t = e.target.closest('[data-notif]');
   if (t) {
     state.prefs.notif[t.dataset.notif] = t.checked;
+    state.prefs.notifAt = Date.now();
     save();
     await notify.syncPrefs(state.prefs.notif);
     return;
   }
-  const tm = e.target.closest('[data-notif-time]');
-  if (tm && /^\d\d:\d\d$/.test(tm.value)) {
-    state.prefs.notif.time = tm.value;
-    save();
-    await notify.syncPrefs(state.prefs.notif);
-    toast(`Daily reminder at ${tm.value}.`);
-  }
 });
+
+/* Reminder time: editing only enables SAVE; nothing changes until it is pressed. */
+const timeDraftChanged = (el) => {
+  const btn = el.closest('.time-edit')?.querySelector('[data-act="notif-time-save"]');
+  if (btn) btn.disabled = !/^\d\d:\d\d$/.test(el.value) || el.value === state.prefs.notif.time;
+};
+document.addEventListener('input', (e) => { const tm = e.target.closest('[data-notif-time]'); if (tm) timeDraftChanged(tm); });
+document.addEventListener('change', (e) => { const tm = e.target.closest('[data-notif-time]'); if (tm) timeDraftChanged(tm); });
 
 document.addEventListener('submit', async (e) => {
   const form = e.target.closest('[data-form]');
@@ -2899,23 +3322,58 @@ document.addEventListener('submit', async (e) => {
 
   if (kind === 'auth') {
     const a = ui.account;
-    a.busy = true;
-    a.error = '';
+    const signup = form.dataset.mode === 'signup';
     a.form = { username: data.username, displayName: data.displayName };
+    a.errors = validateAuth(signup, data);
+    a.error = '';
+    if (Object.keys(a.errors).length) {
+      render();
+      document.querySelector('[aria-invalid="true"]')?.focus();
+      return;
+    }
+    a.busy = true;
     render();
-    const r = a.mode === 'signup'
-      ? await cloud.signUp(data.username, data.password, data.displayName)
-      : await cloud.signIn(data.username, data.password);
+    const r = signup
+      ? await cloud.signUp(data.username.trim(), data.password, data.displayName)
+      : await cloud.signIn(data.username.trim(), data.password);
     a.busy = false;
     if (!r.ok) {
-      a.error = r.status === 0 ? 'Can’t reach the SideQuest server right now.' : r.data.error || 'Something went wrong.';
+      if (r.status === 0) a.error = 'Can’t reach the SideQuest server right now. Check your connection and try again.';
+      else if (r.data.field && ['username', 'password', 'displayName'].includes(r.data.field)) a.errors = { [r.data.field]: r.data.error };
+      else a.error = r.data.error || 'Something went wrong. Please try again.';
       render();
+      document.querySelector('[aria-invalid="true"]')?.focus();
       return;
     }
     a.form = null;
+    a.errors = {};
     await afterAuth(r.data.user);
-    render();
-    toast(`Welcome${a.mode === 'signup' ? '' : ' back'}, ${r.data.user.displayName}.`);
+    toast(`Welcome${signup ? '' : ' back'}, ${r.data.user.displayName}.`);
+    const next = a.pending ? '/account' : a.next || '/';
+    a.next = '';
+    if (route() === next) render(); else go(next);
+    return;
+  }
+
+  if (kind === 'profile-edit') {
+    const r = await cloud.updateProfile({ displayName: data.displayName, bio: data.bio || '', avatar: data.avatar || '', profilePublic: !!data.profilePublic });
+    toast(r.ok ? 'Profile saved.' : r.status === 0 ? offlineMsg : r.data.error || 'Couldn’t save.');
+    ui.profile = { username: '', status: 'idle' };
+    render({ keepFocus: true });
+  }
+
+  if (kind === 'password') {
+    const a = ui.account;
+    a.pwError = '';
+    if (!data.current) a.pwError = 'Enter your current password.';
+    else if (!data.next || data.next.length < 8) a.pwError = 'The new password needs at least 8 characters.';
+    else if (data.next !== data.confirm) a.pwError = 'The new passwords don’t match.';
+    if (!a.pwError) {
+      const r = await cloud.changePassword(data.current, data.next);
+      if (r.ok) { toast('Password changed. Other devices were signed out.'); form.reset(); }
+      else a.pwError = r.status === 0 ? offlineMsg : r.data.error || 'Couldn’t change the password.';
+    }
+    render({ keepFocus: true });
   }
 
   if (kind === 'profile-name') {
@@ -2957,6 +3415,17 @@ document.addEventListener('submit', async (e) => {
   }
 });
 
+/* Clear a field's error as soon as the person edits it. */
+document.addEventListener('input', (e) => {
+  const f = e.target.closest('.field.has-error');
+  if (!f || !e.target.name) return;
+  f.classList.remove('has-error');
+  e.target.removeAttribute('aria-invalid');
+  e.target.removeAttribute('aria-describedby');
+  f.querySelector('.field-error')?.remove();
+  if (ui.account.errors) delete ui.account.errors[e.target.name === 'confirm' ? 'confirm' : e.target.name];
+});
+
 /* keep the radio highlight + quest preview in sync without re-rendering the form */
 document.addEventListener('change', (e) => {
   if (e.target.name === 'quest') { ui.chal.quest = e.target.value; render({ keepFocus: true }); }
@@ -2967,10 +3436,54 @@ const TITLES = {
   '/': 'SideQuest', '/daily': 'Today’s SideQuest', '/discover': 'Discover', '/roll': 'Quest Roll',
   '/bored': 'I’m Bored', '/weird': 'Something Weird', '/my-quests': 'My Quests', '/progress': 'Progress',
   '/showcase': 'Showcase', '/challenges': 'Friend Challenges', '/settings': 'Settings', '/account': 'Account',
+  '/login': 'Sign in', '/signup': 'Create account',
 };
+
+/* ---------------- Quest timer ----------------
+   One interval at most, ever. Remaining time is derived from the
+   persisted startedAt, so re-renders, tab switches and returning to the
+   quest later can never drift or stack timers. */
+let timerHandle = null;
+function stopTimer() {
+  if (timerHandle) { clearInterval(timerHandle); timerHandle = null; }
+}
+const fmtClock = (ms) => {
+  const t = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(t / 60);
+  return `${String(m).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+};
+function startTimer(id) {
+  stopTimer();
+  const el = $('#timer');
+  if (!el) return;
+  /* Opening the active screen directly (reload, deep link) still has to start the clock. */
+  if (!state.active || state.active.id !== id) {
+    state.active = { id, startedAt: Date.now() };
+    save();
+  }
+  const total = Number(el.dataset.minutes) * 60000;
+  const startedAt = state.active.startedAt;
+  const fill = $('#timer-fill');
+  const note = $('#timer-note');
+  const panel = el.closest('.timer-panel');
+  const tick = () => {
+    const left = total - (Date.now() - startedAt);
+    el.textContent = fmtClock(left);
+    if (fill) fill.style.width = `${Math.min(100, Math.max(0, ((total - left) / total) * 100))}%`;
+    if (left <= 0) {
+      stopTimer();
+      panel?.classList.add('timer-done');
+      el.setAttribute('aria-live', 'polite');
+      if (note) note.textContent = 'Time’s up. Finish up whenever you’re ready: no pressure.';
+    }
+  };
+  tick();
+  if (total - (Date.now() - startedAt) > 0) timerHandle = setInterval(tick, 250);
+}
 
 function render({ keepFocus = false, fromNav = false } = {}) {
   const r = route();
+  stopTimer();
   let content = '';
 
   const prev = document.activeElement;
@@ -3004,6 +3517,12 @@ function render({ keepFocus = false, fromNav = false } = {}) {
     content = settingsView();
   } else if (r === '/account') {
     content = accountView();
+  } else if (r === '/login' || r === '/signup') {
+    content = authPage(r === '/signup' ? 'signup' : 'signin');
+  } else if (/^\/u\/[a-z0-9_]{3,20}$/.test(r)) {
+    content = profilePage(r.split('/')[2]);
+  } else if (r.startsWith('/u/')) {
+    content = `<div class="list-page"><div class="page-wrap-wide"><div class="panel panel-note"><span class="eyebrow">NOT FOUND</span><h2>That doesn’t look like a SideQuest username.</h2><a class="btn btn-dark btn-md" href="#/showcase">BROWSE THE SHOWCASE →</a></div></div></div>`;
   } else if (r.startsWith('/quest/')) {
     const parts = r.split('/').filter(Boolean);
     const id = parts[1];
@@ -3023,9 +3542,12 @@ function render({ keepFocus = false, fromNav = false } = {}) {
   }
 
   app.innerHTML = shell(content);
-  document.title = r.startsWith('/quest/') ? `${face(questById(r.split('/')[2])).title} · SideQuest` : TITLES[r] ? `${TITLES[r]} · SideQuest` : 'SideQuest';
+  document.title = r.startsWith('/u/') ? `@${r.split('/')[2]} · SideQuest` : r.startsWith('/quest/') ? `${face(questById(r.split('/')[2])).title} · SideQuest` : TITLES[r] ? `${TITLES[r]} · SideQuest` : 'SideQuest';
 
   bind();
+  if (r === '/showcase') ensureShowcase();
+  if (/^\/u\/[a-z0-9_]{3,20}$/.test(r)) ensureProfile(r.split('/')[2]);
+  if (r === '/account' && cloud.signedIn() && cloud.backend() && ui.blocks === null) loadBlocks();
 
   if (keepFocus && fid) {
     const el = document.getElementById(fid);
@@ -3039,6 +3561,7 @@ function render({ keepFocus = false, fromNav = false } = {}) {
     if (h) { h.setAttribute('tabindex', '-1'); h.focus({ preventScroll: true }); }
   }
   if (r.endsWith('/card')) paintCard();
+  if (/^\/quest\/[^/]+\/active$/.test(r)) startTimer(r.split('/')[2]);
 }
 
 function bind() {
@@ -3114,14 +3637,30 @@ function bind() {
   document
     .querySelectorAll('[data-showcase]')
     .forEach((el) => {
-      el.onclick = () => {
-        const c = entryFor(el.dataset.showcase);
-
-        if (c) {
-          c.public = true;
-        }
-
+      el.onclick = async () => {
+        const id = el.dataset.showcase;
+        const c = entryFor(id);
+        if (c) c.public = true;
         save();
+        if (!cloud.backend() || !cloud.signedIn()) {
+          toast('Create an account or sign in to share this with the community.');
+          ui.account.next = '/showcase';
+          go(cloud.backend() ? '/signup' : '/showcase');
+          return;
+        }
+        el.disabled = true;
+        const r = await cloud.publishPost(id);
+        el.disabled = false;
+        if (!r.ok) {
+          if (c) c.public = false;
+          save();
+          toast(r.status === 0 ? offlineMsg : r.data.error || 'Couldn’t publish.');
+          return;
+        }
+        ui.showcase.mine = newFeed();
+        ui.showcase.community = newFeed();
+        ui.showcase.tab = 'mine';
+        toast('Published to the Showcase.');
         go('/showcase');
       };
     });
@@ -3176,7 +3715,15 @@ render();
   }
   armNotifications();
   rerenderIfSafe();
+  notify.registerSW();                         // offline fallback + notifications; never blocks first paint
 })();
+
+window.addEventListener('offline', () => toast('You’re offline. Your quests are saved on this device and will sync when you’re back.'));
+window.addEventListener('online', () => {
+  toast('Back online.');
+  if (cloud.signedIn() && cloud.backend()) cloud.syncNow().then(() => loadNet({ silent: true }));
+  else cloud.checkBackend().then(() => rerenderIfSafe());
+});
 
 let lastVis = 0;
 document.addEventListener('visibilitychange', () => {
