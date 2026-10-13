@@ -18,5 +18,5 @@
     { "source": "/(app|styles|data|recommend|cloud|notify|card|share|splash)\\.(js|css)", "headers": [ { "key": "Cache-Control", "value": "no-cache" } ] },
     { "source": "/sw.js", "headers": [ { "key": "Cache-Control", "value": "no-cache" } ] }
   ],
-  "crons": [ { "path": "/api/cron/push", "schedule": "* * * * *" } ]
+  "crons": [ { "path": "/api/cron/push", "schedule": "0 9 * * *" } ]
 }
