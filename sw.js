@@ -4,7 +4,7 @@
    network, so you can never be served stale app code. Only when the network fails do we
    fall back to the last copy we saw. /api/* is never touched: account, sync and social
    calls always hit the network and fail honestly when offline. */
-const CACHE = 'sq-shell-v3';
+const CACHE = 'sq-shell-v4';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) =>

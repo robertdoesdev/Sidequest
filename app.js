@@ -23,6 +23,9 @@ import {
   fits,
 } from './recommend.js';
 import * as cloud from './cloud.js';
+import { backFor, isProfileRoute } from './nav.js';
+import { buildActivity } from './activity.js';
+import { initInstall, installInfo, promptInstall, onInstallChange } from './install.js';
 import * as notify from './notify.js';
 import { profileUrl, questUrl, shareLink, shareMessage } from './share.js';
 import {
@@ -87,13 +90,14 @@ const ui = {
   weird: { level: 2, id: null, shown: [] },
   net: { friends: null, challenges: null, waiting: 0, loading: false, error: '' },
   account: { mode: 'signin', error: '', errors: {}, busy: false, pending: null, confirmDelete: false, next: '' },
-  showcase: { tab: 'community', community: { posts: [], next: null, loading: false, loaded: false, error: '' }, mine: { posts: [], next: null, loading: false, loaded: false, error: '' } },
+  showcase: { drafts: {}, tab: 'community', community: { posts: [], next: null, loading: false, loaded: false, error: '' }, mine: { posts: [], next: null, loading: false, loaded: false, error: '' } },
   profile: { username: '', status: 'idle' },
   blocks: null,
   chal: { quest: '', friend: '', message: '', busy: false },
   sync: { state: 'idle', last: 0 },
   backendChecked: false,
-  rollTimer: null
+  rollTimer: null,
+  conflict: null
 };
 
 const persist = () => {
@@ -214,14 +218,24 @@ function toast(msg) {
 }
 
 const startQuest = (id) => {
-  state.active = { id, startedAt: Date.now() };
-  reveal(id);
-  save();
-  go(`/quest/${id}/active`);
+  /* Never silently replace a quest in progress: same quest resumes, a different one asks first. */
+  if (state.active && state.active.id !== id && quests.some((q) => q.id === state.active.id)) {
+    ui.conflict = { to: id };
+    render();
+    return;
+  }
+  const target = `/quest/${id}/active`;
+  if (!(state.active && state.active.id === id)) {
+    state.active = { id, startedAt: Date.now() };
+    reveal(id);
+    save();
+  }
+  if (route() === target) render();        // already on that URL (e.g. deep link + Switch): the hash won't change, so redraw
+  else go(target);
 };
 
-const PROFILE_ROUTES = ['/progress', '/my-quests', '/challenges', '/settings', '/account'];
-const isProfileRoute = (r) => PROFILE_ROUTES.includes(r) || r.startsWith('/challenge/');
+/* Profile route grouping and back-navigation rules live in nav.js. */
+let prevRoute = null;
 
 function navSvg(kind) {
   const paths = {
@@ -241,9 +255,9 @@ function shell(content, { immersive = false } = {}) {
 
   const r = route();
   const here = (p) =>
-    p === r || (p === '/progress' && isProfileRoute(r)) ? ' nav-active' : '';
+    p === r || (p === '/profile' && isProfileRoute(r) && r !== '/showcase') ? ' nav-active' : '';
   const mHere = (p) =>
-    p === r || (p === '/progress' && isProfileRoute(r)) ? ' mobile-active' : '';
+    p === r || (p === '/profile' && isProfileRoute(r)) ? ' mobile-active' : '';
 
   return `
     <header class="site-header">
@@ -257,7 +271,7 @@ function shell(content, { immersive = false } = {}) {
           <a href="#/daily" data-nav="/daily" class="${here('/daily').trim()}">Today</a>
           <a href="#/discover" data-nav="/discover" class="${here('/discover').trim()}">Discover</a>
           <a href="#/showcase" data-nav="/showcase" class="${here('/showcase').trim()}">Showcase</a>
-          <a href="#/progress" data-nav="/progress" class="${here('/progress').trim()}">Progress${
+          <a href="#/profile" data-nav="/profile" class="${here('/profile').trim()}">Profile${
             ui.net.waiting ? '<i class="nav-dot" aria-label="Challenges waiting"></i>' : ''
           }</a>
         </nav>
@@ -270,6 +284,8 @@ function shell(content, { immersive = false } = {}) {
         </button>
       </div>
     </header>
+    ${ongoingBar()}
+    ${r === '/' ? installPanel({ banner: true }) : ''}
 
     <main class="main-content">
       ${content}
@@ -291,13 +307,14 @@ function shell(content, { immersive = false } = {}) {
         <span class="nav-icon" aria-hidden="true">${navSvg('compass')}</span>
         <span>Discover</span>
       </a>
-      <a href="#/progress" class="${mHere('/progress').trim()}">
+      <a href="#/profile" class="${mHere('/profile').trim()}">
         <span class="nav-icon" aria-hidden="true">${navSvg('profile')}</span>
         <span>Profile${
           ui.net.waiting ? '<i class="nav-dot" aria-label="Challenges waiting"></i>' : ''
         }</span>
       </a>
     </nav>
+    ${conflictDialog()}
   `;
 }
 
@@ -431,10 +448,13 @@ function dailyActions(d, { details = true } = {}) {
         <button class="btn btn-outline btn-lg" data-go="/roll">WANT ANOTHER? ROLL ↗</button>
       </div>`;
   }
+  const resuming = state.active?.id === q.id;
   return `
     <div class="daily-actions">
-      <button class="btn btn-dark btn-xl" data-start="${q.id}">ACCEPT QUEST →</button>
-      <button class="btn btn-outline btn-xl" data-act="daily-skip" ${d.skipsLeft ? '' : 'disabled'}>
+      ${resuming
+        ? `<a class="btn btn-lime btn-xl" href="#/quest/${q.id}/active">CONTINUE QUEST →</a>`
+        : `<button class="btn btn-dark btn-xl" data-start="${q.id}">ACCEPT QUEST →</button>`}
+      <button class="btn btn-outline btn-xl" data-act="daily-skip" ${d.skipsLeft && !resuming ? '' : 'disabled'}>
         ↻ SKIP / GET ANOTHER
       </button>
       ${details ? `<a class="text-link" href="#/daily">See the full plan ↗</a>` : ''}
@@ -478,7 +498,7 @@ function daily() {
     <div class="quest-detail daily-page">
       <div class="page-wrap-wide">
         <div class="detail-top">
-          <a class="back-link" href="#/">← HOME</a>
+          ${backLink()}
           <span class="eyebrow">${fmtDay()}</span>
         </div>
 
@@ -490,11 +510,13 @@ function daily() {
             <p>${esc(q.description)}</p>
             <p class="daily-meta">${metaLine(q)}</p>
             ${streakBadge(d.streak, 'inline')}
+            ${dailyExtras(d)}
             ${dailyActions(d, { details: false })}
             <div class="detail-actions">
               <button class="btn btn-outline btn-lg" data-save="${q.id}">
                 ${state.saved.includes(q.id) ? '★ SAVED' : '☆ SAVE FOR LATER'}
               </button>
+              <button class="btn btn-outline btn-lg" data-act="challenge" data-quest="${q.id}">🤝 DARE A FRIEND</button>
             </div>
           </div>
 
@@ -856,9 +878,9 @@ A little something to get you started.
 
             <button
               class="btn btn-lime btn-lg"
-              data-go="/progress"
+              data-go="/profile"
             >
-              SEE YOUR PROGRESS ↗
+              SEE YOUR PROFILE ↗
             </button>
           </div>
 
@@ -918,7 +940,7 @@ function weird() {
   return `
     <div class="weird-page">
       <div class="page-wrap-wide">
-        <a class="back-link" href="#/">← BACK HOME</a>
+        ${backLink()}
 
         <div class="weird-layout">
           <div class="weird-copy">
@@ -1190,9 +1212,7 @@ function bored() {
   return `
     <div class="bored-page">
       <div class="page-wrap-wide">
-        <a class="back-link" href="#/">
-          ← BACK HOME
-        </a>
+        ${backLink()}
 
         <div class="bored-layout">
           <div>
@@ -1289,9 +1309,7 @@ function roll() {
     <div class="roll-page ${rolling ? 'rolling' : ''}">
       <div class="page-wrap-wide">
         <div class="roll-top">
-          <a class="back-link" href="#/">
-            ← BACK HOME
-          </a>
+          ${backLink()}
 
           <span class="eyebrow">
             THE QUEST GENERATOR /
@@ -1543,9 +1561,7 @@ function detail(id) {
     <div class="quest-detail">
       <div class="page-wrap-wide">
         <div class="detail-top">
-          <a class="back-link" href="#/discover">
-            ← DISCOVER
-          </a>
+          ${backLink()}
 
           <span class="eyebrow">
             SQ / ${q.id.padStart(3, '0')}
@@ -1618,6 +1634,8 @@ function detail(id) {
 }
 
 function active(id) {
+  /* Deep link / reload while ANOTHER quest is in progress: offer a choice, never overwrite it. */
+  if (state.active && state.active.id !== id && quests.some((x) => x.id === state.active.id)) return conflictPanel(id);
   reveal(id);
   const q = questById(id);
   const d = q.detail;
@@ -1626,12 +1644,7 @@ function active(id) {
     <div class="active-page">
       <div class="active-inner">
         <div class="active-top">
-          <a
-            class="back-link"
-            href="#/quest/${id}"
-          >
-            ← QUEST
-          </a>
+          ${backLink()}
 
           <span class="eyebrow">
             ACTIVE SIDEQUEST
@@ -1865,12 +1878,7 @@ function card(id) {
     <div class="card-page">
       <div class="page-wrap-wide">
         <div class="card-page-top">
-          <a
-            class="back-link"
-            href="#/progress"
-          >
-            ← PROGRESS
-          </a>
+          ${backLink()}
 
           <span class="eyebrow">
             SIDEQUEST CLEAR
@@ -1951,6 +1959,7 @@ function myQuests() {
   return `
     <div class="list-page">
       <div class="page-wrap-wide">
+        <div class="section-back">${backLink()}</div>
         <section class="page-heading">
           <span class="eyebrow">
             YOUR SIDEQUESTS
@@ -2034,7 +2043,7 @@ function myQuests() {
   `;
 }
 
-function progress() {
+function myProfile() {
   const skills = [
     ...new Map(
       state.completed.map((c) => {
@@ -2137,7 +2146,11 @@ function progress() {
 }
 
 /* ---------------- Community: avatars, post tiles, feeds ---------------- */
-const AVATAR_GLYPH = { sun: '✺', bolt: 'ϟ', leaf: '❦', wave: '≈', star: '★', moon: '☾' };
+const AVATAR_GLYPH = {
+  sun: '✺', bolt: 'ϟ', leaf: '❦', wave: '≈', star: '★', moon: '☾',
+  fox: '🦊', owl: '🦉', cat: '🐱', frog: '🐸', crab: '🦀', ghost: '👻', rocket: '🚀', cactus: '🌵', pizza: '🍕',
+  comet: '☄️', mushroom: '🍄', robot: '🤖', ufo: '🛸', gem: '💎', flame: '🔥', cloud: '☁️', dino: '🦖', bee: '🐝'
+};
 const AVATARS = Object.keys(AVATAR_GLYPH);
 const avatarEl = (p, cls = '') =>
   `<span class="avatar ${cls} av-${esc(p.avatar || 'none')}" aria-hidden="true">${AVATAR_GLYPH[p.avatar] || esc((p.displayName || p.username || '?').slice(0, 1).toUpperCase())}</span>`;
@@ -2146,19 +2159,26 @@ const offlineMsg = 'You’re offline. Check your connection and try again.';
 
 function postTile(po, { author = true, remove = false } = {}) {
   const q = questById(po.questId);
+  const known = q && q.id === po.questId;
+  const accent = known ? typeColor(q.type) : '#d7f05a';
+  const signed = cloud.signedIn() && cloud.backend();
   return `
-    <article class="showcase-tile showcase-post">
-      ${author ? `<a class="post-author" href="#/u/${esc(po.author.username)}">${avatarEl(po.author, 'avatar-xs')}<span><strong>${esc(po.author.displayName)}</strong> <small>@${esc(po.author.username)}</small></span></a>` : ''}
-      <div>
-        <div class="showcase-tile-icon" aria-hidden="true">${q ? icon(q) : '✳'}</div>
-        <h2>${esc(q ? q.title : 'A SideQuest')}</h2>
+    <article class="showcase-tile showcase-post post-card" style="--accent:${accent}">
+      <div class="post-banner">
+        <span class="post-icon" aria-hidden="true">${known ? icon(q) : '✳'}</span>
+        ${known ? `<span class="post-type">${typeInfo(q.type).icon} ${esc(q.type.toUpperCase())}</span>` : ''}
+      </div>
+      <div class="post-body">
+        <h2>${esc(known ? q.title : 'A SideQuest')}</h2>
         ${po.reflection ? `<span class="post-reflection">${esc(po.reflection)}</span>` : ''}
         ${po.note ? `<p class="post-note">“${esc(po.note)}”</p>` : ''}
+        <span class="eyebrow">${known ? `${esc(q.skill)} · ` : ''}${new Date(po.completedAt).toLocaleDateString()}</span>
       </div>
-      <span class="eyebrow">${q ? `${esc(q.skill)} · ` : ''}${new Date(po.completedAt).toLocaleDateString()}</span>
+      ${author ? `<a class="post-author" href="#/u/${esc(po.author.username)}">${avatarEl(po.author, 'avatar-xs')}<span><strong>${esc(po.author.displayName)}</strong> <small>@${esc(po.author.username)}</small></span></a>` : ''}
       <div class="post-actions">
         <button class="link-btn" data-act="share-post" data-u="${esc(po.author.username)}" data-q="${esc(po.questId)}">Share</button>
-        ${q ? `<a class="link-btn" href="#/quest/${esc(po.questId)}">Try it</a>` : ''}
+        ${known ? `<a class="link-btn" href="#/quest/${esc(po.questId)}">Try it</a>` : ''}
+        ${known && signed && !remove ? `<button class="link-btn" data-act="challenge" data-quest="${esc(po.questId)}">Challenge a friend</button>` : ''}
         ${remove ? `<button class="link-btn danger-link" data-act="showcase-unpublish" data-pid="${po.id}" data-q="${esc(po.questId)}">Unpublish</button>` : ''}
       </div>
     </article>`;
@@ -2241,14 +2261,22 @@ function showcase() {
       <h2 class="feed-title">PUBLISHED</h2>
       ${feedBlock(m, 'mine', '<p class="muted">You haven’t published anything yet.</p>', { remove: true })}
       ${ready.length ? `<h2 class="feed-title">READY TO SHARE</h2>
-        <div class="friend-list">${ready.map((c) => { const q = questById(c.id); return `
-          <div class="friend-row"><span><strong>${esc(q.title)}</strong> <small>${new Date(c.date).toLocaleDateString()}</small></span>
-          <button class="btn btn-dark btn-sm" data-act="showcase-publish" data-q="${esc(c.id)}" ${ui.showcase.busy === c.id ? 'disabled' : ''}>${ui.showcase.busy === c.id ? 'PUBLISHING…' : 'PUBLISH'}</button></div>`; }).join('')}</div>` : ''}`;
+        <div class="ready-grid">${ready.map((c) => { const q = questById(c.id); const d = ui.showcase.drafts?.[c.id] || ''; const busy = ui.showcase.busy === c.id; return `
+          <div class="ready-card" style="--accent:${typeColor(q.type)}">
+            <span class="ready-icon" aria-hidden="true">${icon(q)}</span>
+            <div class="ready-main">
+              <strong>${esc(q.title)}</strong><small>Finished ${new Date(c.date).toLocaleDateString()}${c.reflection ? ` · ${esc(c.reflection)}` : ''}</small>
+              <label class="sr-only" for="pub-${esc(c.id)}">Optional note for the Showcase</label>
+              <textarea id="pub-${esc(c.id)}" data-draft="${esc(c.id)}" maxlength="140" rows="2" placeholder="Add a line about how it went (optional, public)">${esc(d)}</textarea>
+              <button class="btn btn-dark btn-sm" data-act="showcase-publish" data-q="${esc(c.id)}" ${ui.showcase.busy ? 'disabled' : ''}>${busy ? 'PUBLISHING…' : 'PUBLISH TO SHOWCASE'}</button>
+            </div>
+          </div>`; }).join('')}</div>` : ''}`;
   }
 
   return `
     <div class="list-page">
       <div class="page-wrap-wide">
+        <div class="section-back">${backLink()}</div>
         <section class="page-heading">
           <span class="eyebrow">THE SHOWCASE</span>
           <h1>THINGS PEOPLE<br><em>ACTUALLY DID.</em></h1>
@@ -2353,26 +2381,39 @@ function profilePage(username) {
     else if (!signed) friendBtns = `<a class="btn btn-dark btn-md" href="#/login" data-act="set-next" data-next="/u/${u}">SIGN IN TO ADD FRIEND</a>`;
     else if (f === 'none') friendBtns = `<button class="btn btn-dark btn-md" data-act="pf-add" data-u="${u}" ${p.busy ? 'disabled' : ''}>ADD FRIEND</button>`;
     else if (f === 'outgoing') friendBtns = `<span class="pill">REQUEST SENT</span><button class="btn btn-outline btn-md" data-act="pf-cancel" data-u="${u}">CANCEL REQUEST</button>`;
-    else if (f === 'incoming') friendBtns = `<button class="btn btn-dark btn-md" data-act="pf-respond" data-u="${u}" data-v="1">ACCEPT REQUEST</button><button class="btn btn-outline btn-md" data-act="pf-respond" data-u="${u}" data-v="0">DECLINE</button>`;
+    else if (f === 'incoming') friendBtns = `<button class="btn btn-dark btn-md" data-act="pf-respond" data-u="${u}" data-v="1" aria-label="Accept friend request from @${u}">ACCEPT REQUEST</button><button class="btn btn-reject btn-md" data-act="pf-respond" data-u="${u}" data-v="0" aria-label="Reject friend request from @${u}">REJECT</button>`;
     else if (f === 'friends') friendBtns = `<span class="pill">FRIENDS ✓</span><a class="btn btn-lime btn-md" href="#/challenge/new" data-act="chal-friend" data-u="${u}">CHALLENGE</a><button class="link-btn danger-link" data-act="pf-remove" data-u="${u}">Remove friend</button>`;
+    const posts = p.feed.posts;
+    const tc = {};
+    posts.forEach((x) => { const t = questById(x.questId)?.type; if (t) tc[t] = (tc[t] || 0) + 1; });
+    const vibe = Object.entries(tc).sort((a, b) => b[1] - a[1])[0];
+    const newest = posts[0];
+    const nq = newest ? questById(newest.questId) : null;
     body = `
-      <section class="pp-hero">
-        ${avatarEl(pr, 'avatar-xl')}
-        <div>
-          <h1>${esc(pr.displayName)}</h1>
-          <p class="muted">@${u} · joined ${new Date(pr.joined).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</p>
-          <p class="pp-bio">${pr.bio ? esc(pr.bio) : '<span class="muted">No bio yet.</span>'}</p>
-          <p class="pp-stats"><strong>${pr.stats.shared}</strong> quest${pr.stats.shared === 1 ? '' : 's'} shared</p>
+      <section class="pp-hero pp-card">
+        <div class="pp-banner av-${esc(pr.avatar || 'none')}" aria-hidden="true"></div>
+        <div class="pp-id">
+          ${avatarEl(pr, 'avatar-xl')}
+          <div>
+            <h1>${esc(pr.displayName)}</h1>
+            <p class="muted">@${u} · joined ${new Date(pr.joined).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</p>
+          </div>
+        </div>
+        <p class="pp-bio">${pr.bio ? esc(pr.bio) : '<span class="muted">No bio yet.</span>'}</p>
+        <div class="pp-chips">
+          <span class="chip"><b>${pr.stats.shared}</b> quest${pr.stats.shared === 1 ? '' : 's'} shared</span>
+          ${vibe && p.feed.loaded && !p.feed.next ? `<span class="chip">${typeInfo(vibe[0]).icon} Mostly ${esc(vibe[0])}</span>` : ''}
+        </div>
+        <div class="pp-actions">${friendBtns}
+          <button class="btn btn-outline btn-md" data-act="share-profile" data-u="${u}" data-n="${esc(pr.displayName)}">SHARE PROFILE</button>
+          ${signed && f !== 'self' ? `<button class="link-btn" data-act="pf-report" data-u="${u}">Report</button><button class="link-btn danger-link" data-act="pf-block" data-u="${u}">Block</button>` : ''}
         </div>
       </section>
-      <div class="pp-actions">${friendBtns}
-        <button class="btn btn-outline btn-md" data-act="share-profile" data-u="${u}" data-n="${esc(pr.displayName)}">SHARE PROFILE</button>
-        ${signed && f !== 'self' ? `<button class="link-btn" data-act="pf-report" data-u="${u}">Report</button><button class="link-btn danger-link" data-act="pf-block" data-u="${u}">Block</button>` : ''}
-      </div>
+      ${nq ? `<section class="pp-highlight" style="--accent:${typeColor(nq.type)}" aria-label="Latest shared quest"><span class="post-icon" aria-hidden="true">${icon(nq)}</span><div><span class="eyebrow">LATEST SHARED QUEST</span><h2>${esc(nq.title)}</h2>${newest.note ? `<p class="post-note">“${esc(newest.note)}”</p>` : `<p class="muted">${esc(nq.description)}</p>`}<a class="btn btn-dark btn-sm" href="#/quest/${esc(nq.id)}">TRY IT YOURSELF →</a></div></section>` : ''}
       <h2 class="feed-title">SHARED QUESTS</h2>
       ${feedBlock(p.feed, 'profile', `<p class="muted">${f === 'self' ? 'You haven’t published anything yet. Share a finished quest from the Showcase page.' : `${esc(pr.displayName)} hasn’t shared anything yet.`}</p>`, { author: false, remove: f === 'self' })}`;
   }
-  return `<div class="list-page profile-page"><div class="page-wrap-wide"><a class="auth-back" href="#/showcase">← Showcase</a>${body}</div></div>`;
+  return `<div class="list-page profile-page"><div class="page-wrap-wide">${backLink()}${body}</div></div>`;
 }
 
 function ensureProfile(username) {
@@ -2395,25 +2436,9 @@ async function loadProfile(username) {
 const reloadProfile = () => { ui.profile = { username: '', status: 'idle' }; render(); };
 
 /* ---------------- Profile hub (tabs) ---------------- */
-function profileTabs(active) {
-  const tabs = [
-    ['/progress', 'Progress'],
-    ['/my-quests', 'My Quests'],
-    ['/challenges', 'Challenges'],
-    ['/settings', 'Settings'],
-    ['/account', 'Account']
-  ];
-  return `
-    <nav class="profile-tabs" aria-label="Profile sections">
-      ${tabs
-        .map(
-          ([p, l]) => `
-        <a href="#${p}" class="${active === p ? 'active' : ''}" ${active === p ? 'aria-current="page"' : ''}>
-          ${l}${p === '/challenges' && ui.net.waiting ? `<i class="nav-dot" aria-label="${ui.net.waiting} waiting"></i>` : ''}
-        </a>`
-        )
-        .join('')}
-    </nav>`;
+/* Section screens get ONE contextual back link instead of a tab strip: the Profile hub is the menu. */
+function profileTabs() {
+  return backLink('cover-back');
 }
 
 const unavailable = (what) => navigator.onLine === false ? `
@@ -2499,10 +2524,10 @@ function accountView() {
             <label for="bio">Bio <span class="muted">(optional, 160 characters)</span></label>
             <div class="field-input"><textarea id="bio" name="bio" maxlength="160" rows="3" placeholder="What are you into?">${esc(u.bio || '')}</textarea></div>
           </div>
-          <fieldset class="avatar-pick">
-            <legend>Avatar</legend>
-            <label class="pick ${!u.avatar ? 'active' : ''}"><input type="radio" name="avatar" value="" ${!u.avatar ? 'checked' : ''} />Initial</label>
-            ${AVATARS.map((k) => `<label class="pick ${u.avatar === k ? 'active' : ''}"><input type="radio" name="avatar" value="${k}" ${u.avatar === k ? 'checked' : ''} /><span aria-hidden="true">${AVATAR_GLYPH[k]}</span> ${k}</label>`).join('')}
+          <fieldset class="avatar-pick avatar-grid">
+            <legend>Avatar <span class="muted">(pick one, or keep your initial)</span></legend>
+            <label class="pick pick-av ${!u.avatar ? 'active' : ''}"><input type="radio" name="avatar" value="" ${!u.avatar ? 'checked' : ''} /><span class="avatar avatar-md av-none" aria-hidden="true">${esc((u.displayName || u.username || '?').slice(0, 1).toUpperCase())}</span><span class="pick-name">initial</span></label>
+            ${AVATARS.map((k) => `<label class="pick pick-av ${u.avatar === k ? 'active' : ''}"><input type="radio" name="avatar" value="${k}" ${u.avatar === k ? 'checked' : ''} /><span class="avatar avatar-md av-${k}" aria-hidden="true">${AVATAR_GLYPH[k]}</span><span class="pick-name">${k}</span></label>`).join('')}
           </fieldset>
           <label class="check-row"><input type="checkbox" name="profilePublic" ${u.profilePublic === false ? '' : 'checked'} /> <span><strong>Public profile.</strong> Anyone with your link can see your name, bio and the quests you publish. Turn it off to hide your profile and your Showcase posts.</span></label>
           <button class="btn btn-dark btn-md" type="submit">SAVE PROFILE</button>
@@ -2569,6 +2594,254 @@ function accountView() {
       <section class="progress-content"><div class="page-wrap-wide narrow">${body}</div></section>
     </div>`;
 }
+
+/* ================= V3: navigation, ongoing quest, Profile hub, Friends, Activity, install ================= */
+
+/* One consistent back link (rules live in nav.js). Shows where it goes, and keeps context when it can. */
+function backLink(extra = '') {
+  const b = backFor(route(), prevRoute);
+  if (!b) return '';
+  return `<a class="back-link ${extra}" href="#${esc(b.href)}" aria-label="Back to ${esc(b.label)}">← ${esc(b.label.toUpperCase())}</a>`;
+}
+
+/* ---- Ongoing quest: always visible, one tap to resume ---- */
+const activeQuest = () => (state.active ? quests.find((x) => x.id === state.active.id) || null : null);
+function elapsedText(startedAt) {
+  const m = Math.max(0, Math.floor((Date.now() - startedAt) / 60000));
+  if (m < 1) return 'Just started';
+  if (m < 60) return `Started ${m} min ago`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `Started ${h} h ago` : 'Started a while ago';
+}
+function ongoingBar() {
+  const q = activeQuest();
+  if (!q || /^\/quest\/[^/]+\/active$/.test(route())) return '';
+  return `
+    <aside class="ongoing-bar" aria-label="Quest in progress">
+      <span class="ongoing-pulse" aria-hidden="true"></span>
+      <div class="ongoing-copy"><strong>IN PROGRESS · ${esc(q.title)}</strong><small>${elapsedText(state.active.startedAt)}</small></div>
+      <a class="btn btn-lime btn-sm" href="#/quest/${esc(q.id)}/active">RESUME →</a>
+    </aside>`;
+}
+
+/* ---- Starting a quest while another is active: always a clear choice, never silent loss ---- */
+const conflictCopy = (to) => {
+  const cur = activeQuest();
+  const next = quests.find((x) => x.id === to);
+  if (!cur || !next) return '';
+  return `
+    <span class="eyebrow">ONE QUEST AT A TIME</span>
+    <h2 id="cf-h">You’re already on “${esc(cur.title)}”.</h2>
+    <p>${elapsedText(state.active.startedAt)}. Switching to “${esc(next.title)}” drops that timer. Nothing you’ve finished is affected.</p>
+    <div class="conflict-actions">
+      <a class="btn btn-lime btn-lg" href="#/quest/${esc(cur.id)}/active" data-act="conflict-resume">RESUME “${esc(cur.title.slice(0, 22).toUpperCase())}${cur.title.length > 22 ? '…' : ''}”</a>
+      <button class="btn btn-dark btn-lg" data-act="conflict-switch" data-to="${esc(to)}">SWITCH TO THE NEW ONE</button>
+      <button class="btn btn-outline btn-lg" data-act="conflict-cancel">CANCEL</button>
+    </div>`;
+};
+function conflictDialog() {
+  if (!ui.conflict) return '';
+  const inner = conflictCopy(ui.conflict.to);
+  if (!inner) return '';
+  return `<div class="modal-backdrop" data-act="conflict-cancel-bg"><div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="cf-h">${inner}</div></div>`;
+}
+function conflictPanel(to) {
+  return `<div class="list-page"><div class="page-wrap-wide narrow">${backLink()}<div class="panel panel-note conflict-panel">${conflictCopy(to)}</div></div></div>`;
+}
+
+/* ---- Friend requests ---- */
+async function respondToRequest(username, accept) {
+  ui.net.busy = ui.net.busy || {};
+  if (ui.net.busy[username]) return null;                        // ignore repeated clicks while in flight
+  ui.net.busy[username] = accept ? 'accept' : 'reject';
+  rerenderIfSafe();
+  const r = await cloud.respondFriend(username, accept);
+  delete ui.net.busy[username];
+  if (r.ok) toast(accept ? `You and @${username} are now friends.` : `Rejected the request from @${username}.`);
+  else if (r.status === 404) toast('That request isn’t pending any more. Refreshing the list.');
+  else toast(r.status === 0 ? offlineMsg : r.data.error || 'Something went wrong. Please try again.');
+  await loadNet({ silent: true });                               // refreshes list, friends and the badge count
+  return r;
+}
+
+function requestRow(p) {
+  const u = esc(p.username);
+  const busy = ui.net.busy?.[p.username] || '';
+  const name = personName(p);
+  return `
+    <li class="request-row">
+      <span class="request-who">${avatarEl(p, 'avatar-sm')}<span><a href="#/u/${u}"><strong>${name}</strong></a><small>@${u} wants to be friends</small></span></span>
+      <span class="request-actions">
+        <button class="btn btn-dark btn-sm" data-act="friend-respond" data-u="${u}" data-v="1" aria-label="Accept friend request from ${name}" ${busy ? 'disabled' : ''}>${busy === 'accept' ? 'ACCEPTING…' : 'ACCEPT'}</button>
+        <button class="btn btn-reject btn-sm" data-act="friend-respond" data-u="${u}" data-v="0" aria-label="Reject friend request from ${name}" ${busy ? 'disabled' : ''}>${busy === 'reject' ? 'REJECTING…' : 'REJECT'}</button>
+      </span>
+    </li>`;
+}
+
+function netGate() {
+  if (!ui.backendChecked) return '<div class="panel"><p class="muted" role="status">Looking for the SideQuest server…</p></div>';
+  if (!cloud.backend()) return unavailable('Friends');
+  if (!cloud.signedIn()) return needSignIn('Friends and challenges');
+  return '';
+}
+
+function friendsView() {
+  const n = ui.net;
+  let body = netGate();
+  if (!body) {
+    const fr = n.friends;
+    if (!fr) body = n.error ? `<p class="form-error" role="alert">${esc(n.error)}</p>` : '<p class="muted" role="status">Loading your friends…</p>';
+    else body = `
+      ${n.error ? `<p class="form-error" role="alert">${esc(n.error)}</p>` : ''}
+      <section class="panel requests-panel ${fr.incoming.length ? 'has-requests' : ''}" aria-labelledby="req-h">
+        <div class="list-heading"><h2 id="req-h">FRIEND REQUESTS</h2><span class="count-badge" aria-label="${fr.incoming.length} pending">${fr.incoming.length}</span></div>
+        ${fr.incoming.length
+          ? `<ul class="request-list">${fr.incoming.map(requestRow).join('')}</ul>`
+          : '<p class="muted">No requests waiting. When someone adds you, they’ll show up here.</p>'}
+      </section>
+
+      <section class="list-section" aria-labelledby="fr-h">
+        <div class="list-heading"><h2 id="fr-h">YOUR FRIENDS</h2><span class="eyebrow">${fr.friends.length}</span></div>
+        ${fr.friends.length ? fr.friends.map((p) => `
+          <div class="friend-row">
+            <span class="request-who">${avatarEl(p, 'avatar-sm')}<span><a href="#/u/${esc(p.username)}"><strong>${personName(p)}</strong></a><small>@${esc(p.username)}</small></span></span>
+            <span class="request-actions">
+              <a class="btn btn-lime btn-sm" href="#/challenge/new" data-act="chal-friend" data-u="${esc(p.username)}">CHALLENGE</a>
+              <button class="link-btn danger-link" data-act="friend-remove" data-u="${esc(p.username)}">Remove</button>
+            </span>
+          </div>`).join('') : '<p class="muted">No friends yet. Add someone by username below, then dare them to do something strange.</p>'}
+      </section>
+
+      ${fr.outgoing.length ? `<section class="list-section" aria-labelledby="out-h">
+        <div class="list-heading"><h2 id="out-h">SENT REQUESTS</h2><span class="eyebrow">${fr.outgoing.length}</span></div>
+        ${fr.outgoing.map((p) => `<div class="friend-row muted"><span class="request-who">${avatarEl(p, 'avatar-sm')}<span><a href="#/u/${esc(p.username)}">${personName(p)}</a><small>@${esc(p.username)} · waiting for a reply</small></span></span><button class="link-btn" data-act="friend-cancel" data-u="${esc(p.username)}">Cancel request</button></div>`).join('')}
+      </section>` : ''}
+
+      <section class="panel" aria-labelledby="add-h">
+        <span class="eyebrow">ADD A FRIEND</span>
+        <h2 id="add-h">Know their username?</h2>
+        <form class="inline-form friend-add" data-form="friend-add">
+          <label class="sr-only" for="fu">Friend’s username</label>
+          <input id="fu" name="username" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="21" required />
+          <button class="btn btn-dark btn-md" type="submit">SEND REQUEST</button>
+        </form>
+        <p class="muted">Friends are found by exact username only. Nobody can browse other users.</p>
+      </section>`;
+  }
+  return `
+    <div class="settings-page">
+      <section class="progress-cover compact-cover"><div class="page-wrap-wide">
+        ${backLink()}
+        <span class="eyebrow">YOUR PEOPLE</span>
+        <h1>FRIENDS<span>.</span></h1>
+      </div></section>
+      <section class="progress-content"><div class="page-wrap-wide narrow">${body}</div></section>
+    </div>`;
+}
+
+/* ---- Profile hub ---- */
+function profileHub() {
+  const signed = cloud.signedIn() && cloud.backend();
+  const acct = cloud.getAccount();
+  const u = acct?.user;
+  const fr = ui.net.friends;
+  const requests = fr ? fr.incoming.length : 0;
+  const chalWaiting = (ui.net.challenges || []).filter((c) => (c.status === 'pending' && c.mine === 'recipient')).length;
+  const streak = dailyStreak(state);
+  const skills = new Set(state.completed.map((c) => questById(c.id)?.skill).filter(Boolean)).size;
+  const act = buildActivity({ completed: state.completed, questById: (id) => quests.find((x) => x.id === id) || null, streak, challenges: ui.net.challenges });
+  const lock = signed ? '' : '<small class="card-lock">Sign in to use</small>';
+  const card = (href, icon, title, sub, { badge = 0, tone = '' } = {}) => `
+    <a class="hub-card ${tone}" href="#${href}">
+      <span class="hub-icon" aria-hidden="true">${icon}</span>
+      <span class="hub-text"><strong>${title}</strong><small>${sub}</small></span>
+      ${badge ? `<span class="count-badge" aria-label="${badge} waiting">${badge}</span>` : ''}
+      <span class="hub-arrow" aria-hidden="true">→</span>
+    </a>`;
+  const latest = act.events[0];
+  return `
+    <div class="profile-hub">
+      <section class="progress-cover compact-cover"><div class="page-wrap-wide">
+        <div class="hub-head">
+          ${u ? avatarEl(u, 'avatar-lg') : '<span class="avatar avatar-lg av-none" aria-hidden="true">🎲</span>'}
+          <div>
+            <span class="eyebrow">${u ? `@${esc(u.username)}` : 'PLAYING AS A GUEST'}</span>
+            <h1>${u ? esc(u.displayName) : 'YOUR SIDEQUEST<br>HQ'}<span>.</span></h1>
+            <p class="hub-meta">${state.completed.length} quest${state.completed.length === 1 ? '' : 's'} finished${streak >= 2 ? ` · ${streak}-day streak` : ''}${skills ? ` · ${skills} skill${skills === 1 ? '' : 's'}` : ''}</p>
+          </div>
+        </div>
+      </div></section>
+      <section class="progress-content"><div class="page-wrap-wide">
+        <div class="hub-grid">
+          ${card('/me', '🧭', 'My Profile', `${skills} skill${skills === 1 ? '' : 's'} unlocked · your story so far`)}
+          ${card('/my-quests', '🎒', 'My Quests', `${state.saved.length} saved · ${state.completed.length} finished`)}
+          ${card('/showcase', '🌟', 'Showcase', 'Share what you did. See what others did.')}
+          ${card('/friends', '👯', 'Friends', signed ? (fr ? `${fr.friends.length} friend${fr.friends.length === 1 ? '' : 's'}${requests ? ` · ${requests} request${requests === 1 ? '' : 's'}` : ''}` : 'Requests and your people') : 'Requests and your people', { badge: requests, tone: requests ? 'hub-attn' : '' })}
+          ${card('/challenges', '⚔️', 'Friend Challenges', signed ? (chalWaiting ? `${chalWaiting} waiting for you` : 'Dare a friend to do a quest') : 'Dare a friend to do a quest', { badge: chalWaiting, tone: chalWaiting ? 'hub-attn' : '' })}
+          ${card('/activity', '⚡', 'Activity', latest ? esc(latest.text) : 'Your streak, wins and highlights')}
+        </div>
+        ${!signed ? `<p class="hub-note">${lock} Friends, challenges and the Showcase need a free account. <a href="#/account">Create one →</a></p>` : ''}
+        <div class="hub-links"><a href="#/settings">Settings &amp; reminders</a><a href="#/account">Account</a>${u ? `<a href="#/u/${esc(u.username)}">View my public profile</a>` : ''}</div>
+        ${installPanel()}
+      </div></section>
+    </div>`;
+}
+
+/* ---- Activity (derived only from real records) ---- */
+function activityView() {
+  const streak = dailyStreak(state);
+  const a = buildActivity({ completed: state.completed, questById: (id) => quests.find((x) => x.id === id) || null, streak, challenges: ui.net.challenges, friends: ui.net.friends?.friends });
+  const when = (t) => { const d = Math.floor((Date.now() - t) / 86400000); return d <= 0 ? 'Today' : d === 1 ? 'Yesterday' : d < 7 ? `${d} days ago` : new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); };
+  return `
+    <div class="settings-page">
+      <section class="progress-cover compact-cover"><div class="page-wrap-wide">
+        ${backLink()}
+        <span class="eyebrow">WHAT YOU’VE BEEN UP TO</span>
+        <h1>ACTIVITY<span>.</span></h1>
+      </div></section>
+      <section class="progress-content"><div class="page-wrap-wide narrow">
+        ${a.highlights.length ? `<div class="highlight-grid">${a.highlights.map((h) => `<div class="highlight"><span aria-hidden="true">${h.icon}</span><strong>${esc(h.title)}</strong><small>${esc(h.text)}</small></div>`).join('')}</div>` : ''}
+        <div class="list-heading"><h2>RECENT</h2><span class="eyebrow">${a.events.length}</span></div>
+        ${a.events.length ? `<ol class="timeline">${a.events.slice(0, 40).map((e) => `<li><span class="tl-icon" aria-hidden="true">${e.icon}</span><a href="${esc(e.href)}"><strong>${esc(e.text)}</strong><small>${when(e.at)}${e.shared ? ' · shared to Showcase' : ''}</small></a></li>`).join('')}</ol>`
+          : `<div class="panel panel-note"><span class="eyebrow">NOTHING YET</span><h2>Your first quest starts the timeline.</h2><p>Finish a quest and it lands here, along with streaks and challenges.</p><a class="btn btn-dark btn-md" href="#/daily">SEE TODAY’S QUEST →</a></div>`}
+      </div></section>
+    </div>`;
+}
+
+/* ---- Install ---- */
+const INSTALL_DISMISS_KEY = 'sidequest-install-dismissed';
+const installDismissed = () => { try { return Date.now() - Number(localStorage.getItem(INSTALL_DISMISS_KEY) || 0) < 14 * 86400000; } catch { return false; } };
+function installPanel({ banner = false } = {}) {
+  const i = installInfo();
+  if (banner && (installDismissed() || !['prompt', 'ios-safari', 'ios-other'].includes(i.mode))) return '';
+  if (i.mode === 'installed') return banner ? '' : '<div class="install-card installed"><span aria-hidden="true">✅</span><div><strong>Installed</strong><small>You’re using SideQuest as an app.</small></div></div>';
+  let text, action = '';
+  if (i.mode === 'prompt') { text = 'Add SideQuest to your device for one-tap access, like a normal app.'; action = '<button class="btn btn-dark btn-md" data-act="install-now">INSTALL SIDEQUEST</button>'; }
+  else if (i.mode === 'ios-safari') text = 'On iPhone or iPad: tap the <strong>Share</strong> button <span aria-hidden="true">⬆︎</span>, then choose <strong>Add to Home Screen</strong>.';
+  else if (i.mode === 'ios-other') text = 'On iPhone or iPad, installing only works from Safari. Open this page in Safari, tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>.';
+  else { if (banner) return ''; text = 'Your browser doesn’t offer one-tap install. SideQuest works fine in the browser, and you can bookmark it.'; }
+  return `<div class="install-card ${banner ? 'install-banner' : ''}"><span aria-hidden="true">📲</span><div><strong>${banner ? 'Put SideQuest on your home screen' : 'Install the app'}</strong><small>${text}</small>${action}</div>${banner ? '<button class="link-btn" data-act="install-dismiss" aria-label="Dismiss install suggestion">Not now</button>' : ''}</div>`;
+}
+
+/* ---- Today helpers: countdown + this week, from real completions ---- */
+function untilTomorrow() {
+  const n = new Date(); const t = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1);
+  const m = Math.max(1, Math.round((t - n) / 60000));
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+}
+function weekStrip() {
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000);
+    days.push({ k: todayKey(d), l: d.toLocaleDateString(undefined, { weekday: 'narrow' }), done: !!state.dailyDone[todayKey(d)], today: i === 0 });
+  }
+  const n = days.filter((d) => d.done).length;
+  return `<div class="week-strip" role="img" aria-label="${n} of the last 7 daily quests finished">${days.map((d) => `<span class="wk ${d.done ? 'wk-done' : ''} ${d.today ? 'wk-today' : ''}"><i>${d.done ? '✓' : ''}</i><b>${d.l}</b></span>`).join('')}</div>`;
+}
+function dailyExtras(d) {
+  return `<div class="daily-extras"><span class="chip">NEW DARE IN ${untilTomorrow()}</span><span class="chip">MOOD · ${esc(String(d.mood || '').toUpperCase())}</span></div>${weekStrip()}`;
+}
+
 
 /* ---------------- Settings / notifications ---------------- */
 function settingsView() {
@@ -2728,39 +3001,12 @@ function challengesView() {
       ${section('PAST', past)}
       ${!ch.length && !n.loading ? '<p class="muted">No challenges yet. Add a friend, then send the first one.</p>' : ''}
 
-      <section class="list-section">
-        <div class="list-heading"><h2>FRIENDS</h2><span class="eyebrow">${fr.friends.length}</span></div>
-
-        ${fr.incoming.map((p) => `
-          <div class="friend-row">
-            <span>${avatarEl(p, 'avatar-xs')}<a href="#/u/${esc(p.username)}"><strong>${personName(p)}</strong></a> <small>@${esc(p.username)} wants to be friends</small></span>
-            <span>
-              <button class="btn btn-dark btn-sm" data-act="friend-respond" data-u="${esc(p.username)}" data-v="1">ACCEPT</button>
-              <button class="btn btn-outline btn-sm" data-act="friend-respond" data-u="${esc(p.username)}" data-v="0">DECLINE</button>
-            </span>
-          </div>`).join('')}
-
-        ${fr.friends.map((p) => `
-          <div class="friend-row">
-            <span>${avatarEl(p, 'avatar-xs')}<a href="#/u/${esc(p.username)}"><strong>${personName(p)}</strong></a> <small>@${esc(p.username)}</small></span>
-            <span>
-              <a class="btn btn-outline btn-sm" href="#/challenge/new" data-act="chal-friend" data-u="${esc(p.username)}">CHALLENGE</a>
-              <button class="link-btn danger-link" data-act="friend-remove" data-u="${esc(p.username)}">Remove</button>
-            </span>
-          </div>`).join('')}
-
-        ${fr.outgoing.map((p) => `
-          <div class="friend-row muted"><span>${avatarEl(p, 'avatar-xs')}<a href="#/u/${esc(p.username)}">${personName(p)}</a> <small>@${esc(p.username)} · request sent</small></span><button class="link-btn" data-act="friend-cancel" data-u="${esc(p.username)}">Cancel request</button></div>`).join('')}
-
-        ${!fr.friends.length && !fr.incoming.length && !fr.outgoing.length ? '<p class="muted">No friends yet.</p>' : ''}
-
-        <form class="inline-form friend-add" data-form="friend-add">
-          <label class="sr-only" for="fu">Friend’s username</label>
-          <input id="fu" name="username" placeholder="Add a friend by username" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="21" required />
-          <button class="btn btn-dark btn-md" type="submit">ADD</button>
-        </form>
-        <p class="muted">Friends are found by exact username only. Nobody can browse other users.</p>
-      </section>`;
+      <a class="hub-card" href="#/friends">
+        <span class="hub-icon" aria-hidden="true">👯</span>
+        <span class="hub-text"><strong>Friends</strong><small>${fr.friends.length} friend${fr.friends.length === 1 ? '' : 's'}${fr.incoming.length ? ` · ${fr.incoming.length} request${fr.incoming.length === 1 ? '' : 's'} waiting` : ''} · add or manage</small></span>
+        ${fr.incoming.length ? `<span class="count-badge" aria-label="${fr.incoming.length} waiting">${fr.incoming.length}</span>` : ''}
+        <span class="hub-arrow" aria-hidden="true">→</span>
+      </a>`;
   }
 
   return `
@@ -3118,8 +3364,10 @@ const actions = {
     if (ui.showcase.busy) return;
     ui.showcase.busy = id;
     render({ keepFocus: true });
-    const r = await cloud.publishPost(id);
+    const note = (ui.showcase.drafts?.[id] || '').trim().slice(0, 140);
+    const r = await cloud.publishPost(id, note);
     ui.showcase.busy = null;
+    if (r.ok && ui.showcase.drafts) delete ui.showcase.drafts[id];
     if (r.ok) {
       const c = entryFor(id); if (c) { c.public = true; save(); }
       ui.showcase.mine.posts = [r.data.post, ...ui.showcase.mine.posts.filter((x) => x.id !== r.data.post.id)];
@@ -3172,9 +3420,7 @@ const actions = {
     reloadProfile();
   },
   'pf-respond': async (el) => {
-    const r = await cloud.respondFriend(el.dataset.u, el.dataset.v === '1');
-    toast(r.ok ? (el.dataset.v === '1' ? 'You’re friends now!' : 'Request declined.') : r.data.error || 'Something went wrong.');
-    loadNet({ silent: true });
+    await respondToRequest(el.dataset.u, el.dataset.v === '1');
     reloadProfile();
   },
   'pf-remove': async (el) => {
@@ -3216,11 +3462,23 @@ const actions = {
     await loadNet({ silent: true });
   },
 
-  'friend-respond': async (el) => {
-    const r = await cloud.respondFriend(el.dataset.u, el.dataset.v === '1');
-    if (!r.ok) toast(r.data.error || 'Something went wrong.');
-    await loadNet({ silent: true });
+  'friend-respond': (el) => respondToRequest(el.dataset.u, el.dataset.v === '1'),
+  'conflict-resume': () => { ui.conflict = null; },                  // the link itself navigates to the active quest
+  'conflict-cancel': () => { ui.conflict = null; render(); },
+  'conflict-switch': (el) => {
+    const to = el.dataset.to;
+    ui.conflict = null;
+    state.active = null;
+    save();
+    toast('Switched quests. The old timer was dropped.');
+    startQuest(to);
   },
+  'install-now': async () => {
+    const out = await promptInstall();
+    if (out === 'accepted') toast('Installing SideQuest…');
+    rerenderIfSafe();
+  },
+  'install-dismiss': () => { try { localStorage.setItem(INSTALL_DISMISS_KEY, String(Date.now())); } catch {} render({ keepFocus: true }); },
   'friend-remove': async (el) => {
     if (!confirm(`Remove @${el.dataset.u}? Open challenges with them will be cancelled.`)) return;
     const r = await cloud.removeFriend(el.dataset.u);
@@ -3237,7 +3495,16 @@ const actions = {
   }
 };
 
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && ui.conflict) { ui.conflict = null; render(); }
+});
+document.addEventListener('input', (e) => {
+  const dr = e.target.closest('[data-draft]');
+  if (dr) { ui.showcase.drafts = ui.showcase.drafts || {}; ui.showcase.drafts[dr.dataset.draft] = dr.value.slice(0, 140); }
+});
+
 document.addEventListener('click', (e) => {
+  if (e.target.classList?.contains('modal-backdrop') && ui.conflict) { ui.conflict = null; render(); return; }
   const act = e.target.closest('[data-act]');
   if (act && !act.disabled && actions[act.dataset.act]) {
     Promise.resolve(actions[act.dataset.act](act, e)).catch(() => toast('Something went wrong. Try again.'));
@@ -3434,7 +3701,7 @@ document.addEventListener('change', (e) => {
 
 const TITLES = {
   '/': 'SideQuest', '/daily': 'Today’s SideQuest', '/discover': 'Discover', '/roll': 'Quest Roll',
-  '/bored': 'I’m Bored', '/weird': 'Something Weird', '/my-quests': 'My Quests', '/progress': 'Progress',
+  '/bored': 'I’m Bored', '/weird': 'Something Weird', '/my-quests': 'My Quests', '/profile': 'Profile', '/me': 'My Profile', '/friends': 'Friends', '/activity': 'Activity',
   '/showcase': 'Showcase', '/challenges': 'Friend Challenges', '/settings': 'Settings', '/account': 'Account',
   '/login': 'Sign in', '/signup': 'Create account',
 };
@@ -3457,10 +3724,11 @@ function startTimer(id) {
   const el = $('#timer');
   if (!el) return;
   /* Opening the active screen directly (reload, deep link) still has to start the clock. */
-  if (!state.active || state.active.id !== id) {
+  if (!state.active) {
     state.active = { id, startedAt: Date.now() };
     save();
   }
+  if (state.active.id !== id) return;                 // another quest is in progress: active() shows the choice instead
   const total = Number(el.dataset.minutes) * 60000;
   const startedAt = state.active.startedAt;
   const fill = $('#timer-fill');
@@ -3482,6 +3750,7 @@ function startTimer(id) {
 }
 
 function render({ keepFocus = false, fromNav = false } = {}) {
+  if (route() === '/progress') { location.replace('#/profile'); return; }   // old Progress links keep working
   const r = route();
   stopTimer();
   let content = '';
@@ -3505,8 +3774,14 @@ function render({ keepFocus = false, fromNav = false } = {}) {
     content = bored();
   } else if (r === '/my-quests') {
     content = myQuests();
-  } else if (r === '/progress') {
-    content = progress();
+  } else if (r === '/profile') {
+    content = profileHub();
+  } else if (r === '/me') {
+    content = myProfile();
+  } else if (r === '/friends') {
+    content = friendsView();
+  } else if (r === '/activity') {
+    content = activityView();
   } else if (r === '/showcase') {
     content = showcase();
   } else if (r === '/challenges') {
@@ -3560,6 +3835,7 @@ function render({ keepFocus = false, fromNav = false } = {}) {
     const h = $('h1');
     if (h) { h.setAttribute('tabindex', '-1'); h.focus({ preventScroll: true }); }
   }
+  if (ui.conflict) $('.modal-card .btn')?.focus();
   if (r.endsWith('/card')) paintCard();
   if (/^\/quest\/[^/]+\/active$/.test(r)) startTimer(r.split('/')[2]);
 }
@@ -3690,11 +3966,15 @@ window.addEventListener('hashchange', () => {
   if (r === '/' && lastRoute !== '/') {
     /* keep picks stable while browsing, refresh when the day changes */
   }
+  prevRoute = lastRoute;
+  ui.conflict = null;
   lastRoute = r;
   render({ fromNav: true });
   if (isProfileRoute(r) && cloud.signedIn() && cloud.backend()) loadNet({ silent: true });
 });
 
+initInstall();
+onInstallChange(() => rerenderIfSafe());
 render();
 
 /* ---------------- Boot (never blocks first paint) ---------------- */

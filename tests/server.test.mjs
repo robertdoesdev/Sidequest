@@ -1,4 +1,4 @@
-import test from 'node:test';
+﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -54,7 +54,7 @@ test('health reports the database and push key; static whitelist blocks server f
 test('migrations are recorded and idempotent', async () => {
   const { migrate } = await import('../lib/db.mjs');
   assert.deepEqual(await migrate(S.db), []);
-  assert.equal((await S.db.query('select version from schema_migrations')).length, 1);
+  assert.deepEqual((await S.db.query('select version from schema_migrations order by version')).map((r) => r.version), ['001_init.sql', '002_more_avatars.sql']);
   const rls = await S.db.query("select count(*)::int as n from pg_class where relkind = 'r' and relrowsecurity and relname in ('users','sessions','user_state','friendships','blocks','challenges','showcase_posts','reports','push_subscriptions','push_settings','rate_limits')");
   assert.equal(rls[0].n, 11);                                    // row-level security is on for every app table
 });
@@ -284,6 +284,49 @@ test('friends: lifecycle, states, duplicate/self guards and authorisation', asyn
   assert.equal((await S.db.query('select 1 from friendships f join users u on u.id = f.user_a where u.username = $1', ['mallory'])).length, 0);
 });
 
+test('friends: respond needs a real boolean, rejects stale/foreign requests, and a rejected request can be re-sent', async () => {
+  const dora = await signup('dora', 'longenough6'); const eli = await signup('eli', 'longenough7'); const fay = await signup('fay', 'longenough8');
+  assert.equal((await post('/api/friends/request', dora, { username: 'eli' })).status, 201);
+  // "false" (a string) is truthy in JS: it must be refused, never treated as an accept
+  assert.equal((await post('/api/friends/respond', eli, { username: 'dora', accept: 'false' })).status, 400);
+  assert.equal((await post('/api/friends/respond', eli, { username: 'dora' })).status, 400);
+  assert.equal((await post('/api/friends/respond', eli, { username: 'dora', accept: 1 })).status, 400);
+  assert.equal((await call('/api/friends', { token: eli })).data.incoming.length, 1);           // nothing changed
+  // sender and a bystander can't answer; unknown / self usernames are plain 404s
+  assert.equal((await post('/api/friends/respond', dora, { username: 'eli', accept: true })).status, 404);
+  assert.equal((await post('/api/friends/respond', fay, { username: 'dora', accept: true })).status, 404);
+  assert.equal((await post('/api/friends/respond', eli, { username: 'nobody1', accept: true })).status, 404);
+  assert.equal((await post('/api/friends/respond', eli, { username: 'eli', accept: true })).status, 404);
+  assert.equal((await call('/api/friends/respond', { method: 'POST', body: { username: 'dora', accept: true } })).status, 401);
+  // reject, then a repeated reject / accept is a harmless 404
+  assert.equal((await post('/api/friends/respond', eli, { username: 'dora', accept: false })).status, 200);
+  assert.equal((await post('/api/friends/respond', eli, { username: 'dora', accept: false })).status, 404);
+  assert.equal((await post('/api/friends/respond', eli, { username: 'dora', accept: true })).status, 404);
+  assert.equal((await call('/api/friends', { token: eli })).data.friends.length, 0);
+  // policy: after a rejection the same person may ask again (rate limit only), but never twice at once
+  assert.equal((await post('/api/friends/request', dora, { username: 'eli' })).status, 201);
+  assert.equal((await post('/api/friends/request', dora, { username: 'eli' })).status, 409);
+  assert.equal((await call('/api/friends', { token: eli })).data.incoming.length, 1);
+  // a block hides the pending request from the person who blocked
+  assert.equal((await post('/api/blocks', eli, { username: 'dora' })).status, 200);
+  assert.equal((await post('/api/friends/respond', eli, { username: 'dora', accept: true })).status, 404);
+  assert.equal((await S.db.query("select 1 from friendships f join users u on u.id = f.user_a or u.id = f.user_b where u.username = 'eli' and f.status = 'accepted'")).length, 0);
+});
+
+test('avatars: the expanded set is accepted, unknown values are not, and the database constraint matches', async () => {
+  const gus = await signup('gus', 'longenough9');
+  for (const av of ['fox', 'ufo', 'dino', 'sun', '']) {
+    const r = await call('/api/me', { method: 'PATCH', token: gus, body: { avatar: av } });
+    assert.equal(r.status, 200, av); assert.equal(r.data.user.avatar, av);
+  }
+  assert.equal((await call('/api/me', { method: 'PATCH', token: gus, body: { avatar: 'hacker' } })).status, 400);
+  assert.equal((await call('/api/me', { method: 'PATCH', token: gus, body: { avatar: '<b>' } })).status, 400);
+  // the database itself refuses values outside the list, even if the API were bypassed
+  await assert.rejects(() => S.db.query("update users set avatar = 'nope' where username = 'gus'"));
+  const pub = await call('/api/profiles/gus', { token: gus });
+  assert.equal(pub.status, 200);
+});
+
 test('blocking removes the friendship, hides both users and can be undone; reports are stored', async () => {
   const eve = await signup('eve', 'longenough6', 'Eve');
   await makeFriends(ana, 'ana', eve, 'eve');
@@ -305,20 +348,24 @@ test('blocking removes the friendship, hides both users and can be undone; repor
 });
 
 test('challenges: lifecycle, state machine, expiry and authorisation', async () => {
-  const gus = await signup('gus', 'longenough7', 'Gus');
-  const hal = await signup('hal', 'longenough8', 'Hal');
-  const ivy = await signup('ivy', 'longenough9', 'Ivy');
-  await makeFriends(gus, 'gus', hal, 'hal');
+  const testSuffix = crypto.randomBytes(3).toString('hex');
+  const gusName = 'gus' + testSuffix;
+  const halName = 'hal' + testSuffix;
+  const ivyName = 'ivy' + testSuffix;
+  const gus = await signup(gusName, 'longenough7', 'Gus');
+  const hal = await signup(halName, 'longenough8', 'Hal');
+  const ivy = await signup(ivyName, 'longenough9', 'Ivy');
+  await makeFriends(gus, gusName, hal, halName);
 
   assert.equal((await call('/api/challenges')).status, 401);
-  assert.equal((await post('/api/challenges', gus, { to: 'ivy', questId: '3' })).status, 403);           // not friends
-  assert.equal((await post('/api/challenges', gus, { to: 'hal', questId: 'zzz' })).status, 400);
+  assert.equal((await post('/api/challenges', gus, { to: ivyName, questId: '3' })).status, 403);           // not friends
+  assert.equal((await post('/api/challenges', gus, { to: halName, questId: 'zzz' })).status, 400);
   assert.equal((await post('/api/challenges', gus, { to: 'ghost1', questId: '3' })).status, 403);
-  const c = await post('/api/challenges', gus, { to: 'hal', questId: '3', message: 'Bet you can’t <b>' });
+  const c = await post('/api/challenges', gus, { to: halName, questId: '3', message: 'Bet you canâ€™t <b>' });
   assert.equal(c.status, 201);
-  assert.equal(c.data.challenge.message, 'Bet you can’t b');
+  assert.equal(c.data.challenge.message, 'Bet you canâ€™t b');
   const id = c.data.challenge.id;
-  assert.equal((await post('/api/challenges', gus, { to: 'hal', questId: '3' })).status, 409);           // duplicate
+  assert.equal((await post('/api/challenges', gus, { to: halName, questId: '3' })).status, 409);           // duplicate
   assert.equal((await call('/api/challenges', { token: hal })).data.waiting, 1);
 
   // outsiders and the wrong side can't touch it
@@ -350,19 +397,19 @@ test('challenges: lifecycle, state machine, expiry and authorisation', async () 
   assert.equal((await post(`/api/challenges/${id}/cancel`, gus)).status, 404);                            // finished challenges are final
 
   // decline + cancel + expiry
-  const c2 = (await post('/api/challenges', gus, { to: 'hal', questId: '4' })).data.challenge;
+  const c2 = (await post('/api/challenges', gus, { to: halName, questId: '4' })).data.challenge;
   assert.equal((await post(`/api/challenges/${c2.id}/respond`, hal, { accept: false })).data.challenge.status, 'declined');
-  const c3 = (await post('/api/challenges', gus, { to: 'hal', questId: '5' })).data.challenge;
+  const c3 = (await post('/api/challenges', gus, { to: halName, questId: '5' })).data.challenge;
   assert.equal((await post(`/api/challenges/${c3.id}/cancel`, gus)).data.challenge.status, 'cancelled');
   assert.equal((await post(`/api/challenges/${c3.id}/respond`, hal, { accept: true })).status, 404);
-  const c4 = (await post('/api/challenges', gus, { to: 'hal', questId: '6' })).data.challenge;
+  const c4 = (await post('/api/challenges', gus, { to: halName, questId: '6' })).data.challenge;
   await S.db.query("update challenges set expires_at = now() - interval '1 hour' where id = $1", [c4.id]);
   assert.equal((await post(`/api/challenges/${c4.id}/respond`, hal, { accept: true })).status, 404);      // expired
   assert.equal((await call('/api/challenges', { token: gus })).data.challenges.find((x) => x.id === c4.id).status, 'expired');
 
   // removing the friend cancels open challenges but keeps finished results
-  const c5 = (await post('/api/challenges', gus, { to: 'hal', questId: '7' })).data.challenge;
-  await call('/api/friends/hal', { method: 'DELETE', token: gus });
+  const c5 = (await post('/api/challenges', gus, { to: halName, questId: '7' })).data.challenge;
+  await call(`/api/friends/${halName}`, { method: 'DELETE', token: gus });
   const after = (await call('/api/challenges', { token: gus })).data.challenges;
   assert.equal(after.find((x) => x.id === c5.id).status, 'cancelled');
   assert.equal(after.find((x) => x.id === id).status, 'completed');
@@ -381,15 +428,41 @@ test('legacy db.json accounts import with working passwords, without overwriting
     challenges: { '0123456789abcdef': { id: '0123456789abcdef', from: 'oldie', to: 'pal', questId: '2', message: 'hi', status: 'pending', fromDone: 0, toDone: 0, created: 1, updated: 2 } },
     sessions: {}, push: {}
   }));
-  const run = () => spawnSync(process.execPath, ['scripts/import-json.mjs'], { env: { ...process.env, SIDEQUEST_DATA: dir, DATABASE_URL: '' }, encoding: 'utf8' });
-  const r1 = run();
-  assert.equal(r1.status, 0, r1.stderr);
-  assert.match(r1.stdout, /users: 2/);
-  assert.match(run().stdout, /users: 0/);                                                                  // re-run adds nothing
-  const S2 = await startServer({ port: 0, dataDir: dir, schedule: false, quiet: true });
-  const b2 = `http://127.0.0.1:${S2.port}`;
-  const login = await (await fetch(b2 + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'oldie', password: 'legacy-password' }) })).json();
-  assert.ok(login.token, 'legacy password still works');
+const run = () => spawnSync(process.execPath, ['scripts/import-json.mjs'], {
+  env: { ...process.env, SIDEQUEST_DATA: dir, DATABASE_URL: '' },
+  encoding: 'utf8',
+});
+
+const clean = (output) => output.replace(/\u001b\[[0-9;]*m/g, '');
+
+const r1 = run();
+assert.equal(r1.status, 0, r1.stderr);
+assert.match(clean(r1.stdout), /users: 2/);
+
+const r2 = run();
+assert.equal(r2.status, 0, r2.stderr);
+assert.match(clean(r2.stdout), /users: 0/); // re-run adds nothing
+
+const S2 = await startServer({
+  port: 0,
+  dataDir: dir,
+  schedule: false,
+  quiet: true,
+});
+
+const b2 = `http://127.0.0.1:${S2.port}`;
+const login = await (
+  await fetch(b2 + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: 'oldie',
+      password: 'legacy-password',
+    }),
+  })
+).json();
+
+assert.ok(login.token, 'legacy password still works');
   const st = await (await fetch(b2 + '/api/state', { headers: { Authorization: `Bearer ${login.token}` } })).json();
   assert.equal(st.state.completed[0].id, '1');
   const fr = await (await fetch(b2 + '/api/friends', { headers: { Authorization: `Bearer ${login.token}` } })).json();

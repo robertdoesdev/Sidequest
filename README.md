@@ -100,3 +100,12 @@ Notes: Vercel Cron's every-minute schedule needs a plan that allows it (Hobby is
 **Not verified (needs credentials or a real host):** running against a hosted Postgres/Supabase (tested with the embedded Postgres, same SQL); the Vercel deployment itself (function routing, cron); real background push delivery to a phone (the encryption and VAPID header are tested against a fake push service). Do not call it production-verified until those are exercised.
 
 **Known limits:** no email, so no password recovery or email verification (needs an email provider); sessions are bearer tokens in `localStorage`; moderation is limited to block + report (reports are stored, there is no admin UI); friends are found by exact username only.
+
+
+## V3 upgrade notes
+
+- **Profile hub** (`#/profile`, replaces Progress; `#/progress` still redirects). Sections: My Profile (`#/me`), My Quests, Showcase, Friends (`#/friends`), Friend Challenges, Activity (`#/activity`).
+- **Back navigation** is one pattern, defined in `nav.js` (unit-tested): come-from context when sensible, fixed parent otherwise, none on top-level tabs.
+- **Ongoing quest**: a bar shows on every screen while a quest is in progress. Starting a different quest asks first (resume / switch / cancel).
+- **Migration 002** (`migrations/002_more_avatars.sql`) widens the avatar list from 6 to 24. Run it on the database **before** deploying this front end; a manual rollback is in `migrations/down/`. Until it is applied, picking a new avatar returns a friendly 409 and nothing else breaks.
+- **Tests**: `npm test` (server tests need `npm install` for the embedded database). `tests/static.test.mjs` needs no database. Browser checks: `node tests/e2e/mock-server.mjs &` then `python3 tests/e2e/browser.py` (needs Playwright; uses a mock API, so it exercises the front end only).

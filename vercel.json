@@ -15,7 +15,7 @@
       { "key": "Referrer-Policy", "value": "same-origin" },
       { "key": "Content-Security-Policy", "value": "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' https://images.unsplash.com data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" }
     ] },
-    { "source": "/(app|styles|data|recommend|cloud|notify|card|share|splash)\\.(js|css)", "headers": [ { "key": "Cache-Control", "value": "no-cache" } ] },
+    { "source": "/(app|styles|data|recommend|cloud|notify|card|share|splash|nav|activity|install)\\.(js|css)", "headers": [ { "key": "Cache-Control", "value": "no-cache" } ] },
     { "source": "/sw.js", "headers": [ { "key": "Cache-Control", "value": "no-cache" } ] }
   ],
   "crons": [ { "path": "/api/cron/push", "schedule": "0 9 * * *" } ]
