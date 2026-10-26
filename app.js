@@ -1,5 +1,7 @@
 import {
   quests,
+  allQuests,
+  categoryInfo,
   categories,
   questById,
   matchingQuests,
@@ -150,7 +152,8 @@ const esc = (s) =>
       })[c]
   );
 
-const icon = (q) => q.icon;
+/* One emoji per quest, stored on the quest itself (data.js). Falls back so a visual is never empty. */
+const icon = (q) => (q && typeof q.icon === 'string' && q.icon.trim()) || categoryInfo(q?.category).fallback || '✨';
 
 const route = () =>
   (location.hash.replace(/^#/, '') || '/').split('?')[0];
@@ -219,7 +222,7 @@ function toast(msg) {
 
 const startQuest = (id) => {
   /* Never silently replace a quest in progress: same quest resumes, a different one asks first. */
-  if (state.active && state.active.id !== id && quests.some((q) => q.id === state.active.id)) {
+  if (state.active && state.active.id !== id && allQuests.some((q) => q.id === state.active.id)) {
     ui.conflict = { to: id };
     render();
     return;
@@ -318,26 +321,14 @@ function shell(content, { immersive = false } = {}) {
   `;
 }
 
-const QUEST_IMAGES = {
-  Creative: 'https://images.unsplash.com/photo-1658786335126-6e00866428ae?auto=format&fit=crop&fm=jpg&q=82&w=1400',
-  Brain: 'https://images.unsplash.com/photo-1658877915390-cbdda4d7e1f5?auto=format&fit=crop&fm=jpg&q=82&w=1400',
-  Practical: 'https://images.unsplash.com/photo-1755436612908-fdef1439f18d?auto=format&fit=crop&fm=jpg&q=82&w=1400',
-  Tech: 'https://images.unsplash.com/photo-1755436612908-fdef1439f18d?auto=format&fit=crop&fm=jpg&q=82&w=1400',
-  Physical: 'https://images.unsplash.com/photo-1547941126-3d5322b218b0?auto=format&fit=crop&fm=jpg&q=82&w=1400',
-  Social: 'https://images.unsplash.com/photo-1774802442730-da32263d7574?auto=format&fit=crop&fm=jpg&q=82&w=1400',
-  Random: 'https://images.unsplash.com/photo-1771146077085-d1fec95c4afe?auto=format&fit=crop&fm=jpg&q=82&w=1400'
-};
-const questImage = (q) => QUEST_IMAGES[q.category] || QUEST_IMAGES.Random;
-
 function questCard(q) {
   const f = face(q);
 
   return `
     <article class="quest-card">
-      <div class="quest-art art-${q.category.toLowerCase()}" data-category="${esc(q.category)}">
-        <img class="quest-art-image" src="${questImage(q)}" alt="" loading="lazy" decoding="async">
-        <span class="quest-art-scrim"></span>
+      <div class="quest-art art-${categoryInfo(q.category).slug}" data-category="${esc(q.category)}" style="--cat:${categoryInfo(q.category).color}">
         <span class="art-index">SQ / ${q.id.padStart(3, '0')}</span>
+        <span class="quest-emoji" role="img" aria-label="${esc(f.title)}">${esc(f.icon)}</span>
         <span class="quest-art-category">${esc(q.category)}</span>
       </div>
 
@@ -383,16 +374,7 @@ function questCard(q) {
 }
 
 function visual(q, cls = '') {
-  const image =
-    q.id === '1'
-      ? 'assets/card-flourish.jpg'
-      : q.id === '3'
-        ? 'assets/moonwalk.jpg'
-        : null;
-
-  return image
-    ? `<img src="${image}" alt="${esc(q.title)}"/>`
-    : `<span class="${cls}">${icon(q)}</span>`;
+  return `<span class="${cls}" role="img" aria-label="${esc(q.title)}">${icon(q)}</span>`;
 }
 
 /* Streak artifact: a small collectible stamp + a 7-pip week meter.
@@ -621,7 +603,7 @@ function home() {
             </div>
 
             <div class="hero-image">
-              ${visual(quests[0])}
+              <img src="assets/card-flourish.jpg" alt="${esc(quests[0].title)}"/>
             </div>
 
             <div class="hero-visual-bottom">
@@ -851,9 +833,9 @@ A little something to get you started.
 
         <div class="quest-grid">
           ${[
-            quests[0],
-            quests[2],
-            quests[12]
+            questById('1'),
+            questById('3'),
+            questById('13')
           ]
             .map(questCard)
             .join('')}
@@ -1051,13 +1033,13 @@ function discover() {
             <div class="filter-row"><span class="filter-label">VIBE</span><div class="category-filters">${pill('type', '', 'All')}${QUEST_TYPES.map((t) => pill('type', t.id, `${t.icon} ${t.id}`)).join('')}</div></div>
             <div class="filter-row"><span class="filter-label">TIME</span><div class="category-filters">${TIME_PILLS.map(([v, l]) => pill('time', v, l)).join('')}</div></div>
             <div class="filter-row"><span class="filter-label">WHERE</span><div class="category-filters">${ENV_PILLS.map(([v, l]) => pill('env', v, l)).join('')}</div></div>
-            <div class="filter-row"><span class="filter-label">TOPIC</span><div class="category-filters">${pill('cat', '', 'All')}${categories.map((c) => pill('cat', c, c)).join('')}</div></div>
+            <div class="filter-row"><span class="filter-label">CATEGORY</span><div class="category-filters">${pill('cat', '', 'All')}${categories.map((c) => pill('cat', c, c)).join('')}</div></div>
           </div>
           <div class="filter-mobile" aria-label="Quest filters">
             <details class="filter-dropdown"><summary>VIBE <b>${esc(qs.type || 'All')}</b></summary><div class="filter-dropdown-options">${pill('type', '', 'All')}${QUEST_TYPES.map((t) => pill('type', t.id, `${t.icon} ${t.id}`)).join('')}</div></details>
             <details class="filter-dropdown"><summary>TIME <b>${esc(qs.time ? qs.time + ' MIN' : 'Any')}</b></summary><div class="filter-dropdown-options">${TIME_PILLS.map(([v, l]) => pill('time', v, l)).join('')}</div></details>
             <details class="filter-dropdown"><summary>WHERE <b>${esc(qs.env || 'Anywhere')}</b></summary><div class="filter-dropdown-options">${ENV_PILLS.map(([v, l]) => pill('env', v, l)).join('')}</div></details>
-            <details class="filter-dropdown"><summary>TOPIC <b>${esc(qs.cat || 'All')}</b></summary><div class="filter-dropdown-options">${pill('cat', '', 'All')}${categories.map((c) => pill('cat', c, c)).join('')}</div></details>
+            <details class="filter-dropdown"><summary>CATEGORY <b>${esc(qs.cat || 'All')}</b></summary><div class="filter-dropdown-options">${pill('cat', '', 'All')}${categories.map((c) => pill('cat', c, c)).join('')}</div></details>
           </div>
         </section>
 
@@ -1635,7 +1617,7 @@ function detail(id) {
 
 function active(id) {
   /* Deep link / reload while ANOTHER quest is in progress: offer a choice, never overwrite it. */
-  if (state.active && state.active.id !== id && quests.some((x) => x.id === state.active.id)) return conflictPanel(id);
+  if (state.active && state.active.id !== id && allQuests.some((x) => x.id === state.active.id)) return conflictPanel(id);
   reveal(id);
   const q = questById(id);
   const d = q.detail;
@@ -1780,7 +1762,7 @@ function complete(id) {
       <div class="confetti" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
       <div class="complete-inner">
         <div class="completion-art">
-          <img src="${questImage(q)}" alt="" />
+          <b class="completion-emoji" role="img" aria-label="${esc(q.title)}">${esc(icon(q))}</b>
           <span>QUEST CLEAR</span>
           <em class="completion-no">NO. ${q.id.padStart(3, '0')}</em>
         </div>
@@ -2605,7 +2587,7 @@ function backLink(extra = '') {
 }
 
 /* ---- Ongoing quest: always visible, one tap to resume ---- */
-const activeQuest = () => (state.active ? quests.find((x) => x.id === state.active.id) || null : null);
+const activeQuest = () => (state.active ? allQuests.find((x) => x.id === state.active.id) || null : null);
 function elapsedText(startedAt) {
   const m = Math.max(0, Math.floor((Date.now() - startedAt) / 60000));
   if (m < 1) return 'Just started';
@@ -2749,7 +2731,7 @@ function profileHub() {
   const chalWaiting = (ui.net.challenges || []).filter((c) => (c.status === 'pending' && c.mine === 'recipient')).length;
   const streak = dailyStreak(state);
   const skills = new Set(state.completed.map((c) => questById(c.id)?.skill).filter(Boolean)).size;
-  const act = buildActivity({ completed: state.completed, questById: (id) => quests.find((x) => x.id === id) || null, streak, challenges: ui.net.challenges });
+  const act = buildActivity({ completed: state.completed, questById: (id) => allQuests.find((x) => x.id === id) || null, streak, challenges: ui.net.challenges });
   const lock = signed ? '' : '<small class="card-lock">Sign in to use</small>';
   const card = (href, icon, title, sub, { badge = 0, tone = '' } = {}) => `
     <a class="hub-card ${tone}" href="#${href}">
@@ -2790,7 +2772,7 @@ function profileHub() {
 /* ---- Activity (derived only from real records) ---- */
 function activityView() {
   const streak = dailyStreak(state);
-  const a = buildActivity({ completed: state.completed, questById: (id) => quests.find((x) => x.id === id) || null, streak, challenges: ui.net.challenges, friends: ui.net.friends?.friends });
+  const a = buildActivity({ completed: state.completed, questById: (id) => allQuests.find((x) => x.id === id) || null, streak, challenges: ui.net.challenges, friends: ui.net.friends?.friends });
   const when = (t) => { const d = Math.floor((Date.now() - t) / 86400000); return d <= 0 ? 'Today' : d === 1 ? 'Yesterday' : d < 7 ? `${d} days ago` : new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); };
   return `
     <div class="settings-page">

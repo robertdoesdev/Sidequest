@@ -2,7 +2,7 @@
    SideQuest V2 — recommendation engine (pure functions, no DOM)
    Everything here takes the app `state` plus a context and returns quests.
    ===================================================================== */
-import { quests, QUEST_TYPES } from './data.js';
+import { quests, allQuests, QUEST_TYPES } from './data.js';
 
 const DAY = 86400000;
 
@@ -35,7 +35,7 @@ const doneIds = (state) => new Set(state.completed.map((c) => c.id));
 
 /* ---------- user taste profile, derived from what they actually do ---------- */
 export function profile(state) {
-  const done = state.completed.map((c) => quests.find((q) => q.id === c.id)).filter(Boolean);
+  const done = state.completed.map((c) => allQuests.find((q) => q.id === c.id)).filter(Boolean);   // history includes retired quests
   const typeAff = {};
   const catAff = {};
   const skillSeen = new Set();

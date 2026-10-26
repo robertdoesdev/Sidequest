@@ -1688,7 +1688,7 @@ code { background: var(--accent); padding: 1px 6px; border-radius: 3px; font-siz
    V2 — Discover filters, Roll 2.0, Bored
    ===================================================================== */
 .filter-stack { display: grid; gap: 12px; margin-top: 14px; }
-.filter-row { display: grid; grid-template-columns: 54px 1fr; gap: 12px; align-items: center; }
+.filter-row { display: grid; grid-template-columns: 82px 1fr; gap: 12px; align-items: center; }
 .filter-label { font-size: 10px; font-weight: 900; letter-spacing: .14em; color: var(--muted-foreground); }
 .filter-row .category-filters { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; scrollbar-width: thin; }
 .filter-row .filter-pill { white-space: nowrap; flex: 0 0 auto; }
@@ -2389,3 +2389,59 @@ body { background: var(--paper); color: var(--ink); }
 .pp-id { align-items: flex-start !important; }
 .pp-id > div { padding-top: 56px; }
 @media (max-width: 600px) { .pp-id > div { padding-top: 0; } }
+
+/* =====================================================================
+   Emoji mission tiles (V4). No photography: each quest carries its own
+   emoji (data.js `icon`) and each category its own tint (--cat).
+   ===================================================================== */
+.quest-art {
+  height: 148px !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 28% 18%, rgba(255,255,255,.7), rgba(255,255,255,0) 55%),
+    color-mix(in oklab, var(--cat, var(--primary)) 62%, #fff) !important;
+  border-bottom: 1px solid var(--ink) !important;
+}
+.quest-emoji {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 66px;
+  line-height: 1;
+  transform: translateY(-6px);
+  filter: drop-shadow(0 6px 0 rgba(0,0,0,.12));
+  transition: transform .25s ease;
+  user-select: none;
+}
+.quest-card:hover .quest-emoji { transform: translateY(-6px) rotate(-6deg) scale(1.08); }
+.quest-art .art-index { color: var(--foreground) !important; opacity: .65; }
+.quest-art-category::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--foreground);
+  background: var(--cat, #fff);
+  vertical-align: 0;
+}
+/* completion screen */
+.completion-art { display: flex; align-items: center; justify-content: center; background: var(--primary); }
+.completion-art::after { display: none; }
+.completion-emoji {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-style: normal;
+  font-size: 112px;
+  line-height: 1;
+  filter: drop-shadow(0 8px 0 rgba(0,0,0,.14));
+}
+@media (max-width: 700px) {
+  .quest-art { height: 112px !important; }
+  .quest-emoji { font-size: 52px; }
+  .completion-emoji { font-size: 84px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .quest-emoji { transition: none; }
+  .quest-card:hover .quest-emoji { transform: translateY(-6px); }
+}

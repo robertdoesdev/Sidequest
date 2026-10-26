@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { quests, QUEST_TYPES, ENVIRONMENTS, timeBucket } from '../data.js';
+import { quests, allQuests, categories, CATEGORY_INFO, RETIRED_IDS, questById, QUEST_TYPES, ENVIRONMENTS, timeBucket } from '../data.js';
 import { dailyPick, dailyMood, DAILY_TYPES, rollPick, boredPick, weirdPick, pickedForYou, somethingDifferent, seeded } from '../recommend.js';
 import { mergeStates } from '../cloud.js';
 
@@ -8,9 +8,10 @@ const blank = () => ({ interests: [], saved: [], completed: [], revealed: [], sk
 const types = new Set(QUEST_TYPES.map((t) => t.id));
 
 test('quest data integrity', () => {
-  assert.ok(quests.length >= 120);
-  quests.forEach((q, i) => {
-    assert.equal(q.id, String(i + 1));
+  assert.ok(allQuests.length >= 199);                       // nothing was ever deleted
+  assert.ok(quests.length >= 60 && quests.length <= 90, 'curated library size ' + quests.length);
+  allQuests.forEach((q, i) => {
+    assert.equal(q.id, String(i + 1));                     // ids are permanent and positional in allQuests
     assert.ok(types.has(q.type), q.id);
     assert.ok(ENVIRONMENTS[q.environment], q.id);
     assert.ok(q.steps.length >= 3 && q.detail.mission && q.detail.complete && q.detail.where, q.id);
@@ -18,6 +19,8 @@ test('quest data integrity', () => {
     if (q.socialLevel >= 1) assert.ok(q.detail.notes.some((n) => /pressure/i.test(n)), 'boundaries ' + q.id);
     if (q.nearby) assert.ok(q.detail.notes.some((n) => /surroundings/.test(n)), 'outside safety ' + q.id);
     if (q.mystery) assert.equal(q.mystery.teaser.length, 3);
+    assert.ok(CATEGORY_INFO[q.category], 'category ' + q.id);
+    assert.ok(['Easy', 'Medium', 'Hard'].includes(q.difficulty) && q.minutes >= 5 && q.minutes <= 120, 'duration/difficulty ' + q.id);
   });
   QUEST_TYPES.forEach((t) => assert.ok(quests.some((q) => q.type === t.id), 'type used ' + t.id));
   ['5', '10', '30', '60'].forEach((b) => assert.ok(quests.some((q) => timeBucket(q) === b), 'bucket ' + b));
@@ -25,7 +28,7 @@ test('quest data integrity', () => {
 
 test('safety: nothing in the library is risky', () => {
   const bad = /trespass|break into|steal|stunt|drunk|alcohol|drug|knife|fire\b|climb (a|the) (roof|building|fence)|follow (a )?(stranger|someone)|prank (a )?stranger/i;
-  quests.forEach((q) => assert.ok(!bad.test([q.title, q.description, q.steps.join(' ')].join(' ')), q.id + ' ' + q.title));
+  allQuests.forEach((q) => assert.ok(!bad.test([q.title, q.description, q.steps.join(' ')].join(' ')), q.id + ' ' + q.title));
 });
 
 test('daily is deterministic, rotates mood, varies on skip', () => {
@@ -87,8 +90,49 @@ test('merge keeps the most recently saved reminder preferences', () => {
 });
 
 test('V2.1 quests are appended, never renumbered', () => {
-  assert.ok(quests.length >= 169);
-  assert.equal(quests[0].title, 'Learn a card flourish');
-  assert.equal(quests[43].id, '44');
-  assert.ok(quests.slice(139).every((q) => q.id === String(quests.indexOf(q) + 1)));
+  assert.ok(allQuests.length >= 169);
+  assert.equal(allQuests[0].title, 'Learn a card flourish');
+  assert.equal(allQuests[43].id, '44');
+  assert.ok(allQuests.slice(139).every((q) => q.id === String(allQuests.indexOf(q) + 1)));
+});
+
+/* ---------- V4 curation guardrails ---------- */
+const hasEmoji = (s) => typeof s === 'string' && /\p{Extended_Pictographic}/u.test(s);
+
+test('curation: five categories, all used, balanced, every record valid', () => {
+  assert.deepEqual(categories, ['Social', 'Creative', 'Adventure', 'Skill-building', 'Weird-but-safe']);
+  categories.forEach((c) => {
+    const n = quests.filter((q) => q.category === c).length;
+    assert.ok(n >= 10 && n <= 25, c + ' has ' + n);
+  });
+  allQuests.forEach((q) => assert.ok(categories.includes(q.category), q.id + ' ' + q.category));   // retired ones too
+});
+
+test('curation: retired quests are hidden but still resolve for history', () => {
+  assert.ok(RETIRED_IDS.size >= 100);
+  allQuests.filter((q) => q.retired).forEach((q) => {
+    assert.ok(!quests.includes(q));
+    assert.equal(questById(q.id), q);                     // saved / completed / active records keep their quest
+  });
+  assert.equal(quests.length + RETIRED_IDS.size, allQuests.length);
+  assert.ok(quests.every((q) => !q.retired));
+});
+
+test('curation: every mission has its own meaningful emoji, stored on the mission', () => {
+  allQuests.forEach((q) => assert.ok(hasEmoji(q.icon), 'emoji ' + q.id));
+  const seen = new Map();
+  quests.forEach((q) => { assert.ok(!seen.has(q.icon), `emoji ${q.icon} shared by ${seen.get(q.icon)} and ${q.id}`); seen.set(q.icon, q.id); });
+});
+
+test('curation: variety across social intensity, setting, cost and length', () => {
+  [0, 1, 2].forEach((s) => assert.ok(quests.filter((q) => q.socialLevel === s).length >= 8, 'social level ' + s));
+  ['home', 'outside', 'around-town', 'school-work', 'anywhere'].forEach((e) => assert.ok(quests.some((q) => q.environment === e), e));
+  ['Easy', 'Medium', 'Hard'].forEach((d) => assert.ok(quests.some((q) => q.difficulty === d), d));
+  assert.equal(new Set(allQuests.map((q) => q.title.toLowerCase())).size, allQuests.length);
+  quests.forEach((q) => assert.ok(q.detail.complete && q.detail.complete.length > 20, 'completion condition ' + q.id));
+});
+
+test('curation: no filler — banned premises are not in the active library', () => {
+  const filler = /ted talk|spoon|stare at (a|the) wall|imaginary conversation|houseplant|plant (a )?(ted|press)|stuffed toys|your sandwich/i;
+  quests.forEach((q) => assert.ok(!filler.test([q.title, q.description].join(' ')), q.id + ' ' + q.title));
 });

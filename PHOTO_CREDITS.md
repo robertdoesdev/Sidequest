@@ -1,3 +1,5 @@
+> **V4 note:** quest cards, detail pages and the completion screen now use emojis (stored per quest in `data.js`) instead of photographs. The images credited below are no longer loaded by the app and are kept here for the record.
+
 # SideQuest photo credits
 
 Quest card photography uses free Unsplash images. The app references the images directly from `images.unsplash.com` so the ZIP stays small.

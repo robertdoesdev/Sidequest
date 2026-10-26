@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { backFor, parentOf, routeLabel, isProfileRoute } from '../nav.js';
 import { buildActivity } from '../activity.js';
 import { detectInstall } from '../install.js';
-import { quests } from '../data.js';
+import { quests, allQuests } from '../data.js';
 
 const read = (f) => fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');
 
@@ -131,10 +131,10 @@ test('install: only promises what the browser can do', () => {
 
 /* ---------- quest catalogue guardrails ---------- */
 test('catalogue: new dares are original, safe, varied and appended with stable ids', () => {
-  const fresh = quests.slice(169);
+  const fresh = allQuests.slice(169);
   assert.ok(fresh.length >= 30);
   fresh.forEach((q, i) => assert.equal(q.id, String(170 + i)));
-  assert.equal(new Set(quests.map((q) => q.title.toLowerCase())).size, quests.length);   // no duplicate titles
+  assert.equal(new Set(allQuests.map((q) => q.title.toLowerCase())).size, allQuests.length);   // no duplicate titles
   const bad = /\b(strangers?\b.*\b(film|record|follow)|trespass|scare|prank|steal|touch|hug a stranger|private information|home address|password)\b/i;
   fresh.forEach((q) => assert.ok(!bad.test([q.title, q.description, ...q.steps].join(' ')), q.title));
   assert.ok(fresh.filter((q) => q.weirdness >= 2).length >= 15, 'mostly weird/absurd');
