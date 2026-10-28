@@ -9,7 +9,7 @@ const types = new Set(QUEST_TYPES.map((t) => t.id));
 
 test('quest data integrity', () => {
   assert.ok(allQuests.length >= 199);                       // nothing was ever deleted
-  assert.ok(quests.length >= 60 && quests.length <= 90, 'curated library size ' + quests.length);
+  assert.equal(quests.length, 462, '82 existing active quests plus 380 imported quests');
   allQuests.forEach((q, i) => {
     assert.equal(q.id, String(i + 1));                     // ids are permanent and positional in allQuests
     assert.ok(types.has(q.type), q.id);
@@ -24,6 +24,22 @@ test('quest data integrity', () => {
   });
   QUEST_TYPES.forEach((t) => assert.ok(quests.some((q) => q.type === t.id), 'type used ' + t.id));
   ['5', '10', '30', '60'].forEach((b) => assert.ok(quests.some((q) => timeBucket(q) === b), 'bucket ' + b));
+});
+
+test('400 SIDE QUESTS import: 380 unique entries appended without renumbering existing quests', () => {
+  const imported = allQuests.slice(226);
+  assert.equal(imported.length, 380);
+  imported.forEach((q, i) => {
+    assert.equal(q.id, String(227 + i));
+    assert.ok(q.title && q.description && q.detail.mission && q.detail.complete);
+    assert.ok(q.steps.length >= 3);
+    assert.ok(CATEGORY_INFO[q.category]);
+    assert.ok(types.has(q.type));
+    assert.ok(ENVIRONMENTS[q.environment]);
+  });
+  assert.equal(allQuests.length, 606);
+  assert.equal(quests.length, 462);
+  assert.equal(new Set(imported.map((q) => q.title.toLowerCase())).size, 380);
 });
 
 test('safety: nothing in the library is risky', () => {
@@ -70,6 +86,20 @@ test('recommendations avoid completed, respect time/vibe, mix in serendipity', (
   assert.ok(rollPick(s, 'outside').nearby);
 });
 
+test('roll: landing-page quests stay excluded and recent rolls are only soft exclusions', () => {
+  const s = blank();
+  const homeIds = quests.slice(0, 12).map((q) => q.id);
+  const recent = quests.slice(12, 24).map((q) => q.id);
+  const pick = rollPick(s, 'random', [...homeIds, ...recent], () => 0.5, homeIds);
+  assert.ok(!homeIds.includes(pick.id), 'must not return a currently displayed landing-page quest');
+  assert.ok(!recent.includes(pick.id), 'must avoid recent rolls while alternatives exist');
+
+  // Exhaust every soft candidate. The picker may recycle a recent quest, but not a hard-excluded home quest.
+  const softExcluded = quests.filter((q) => !homeIds.includes(q.id)).map((q) => q.id);
+  const fallback = rollPick(s, 'random', [...homeIds, ...softExcluded], () => 0.5, homeIds);
+  assert.ok(!homeIds.includes(fallback.id), 'home exclusion remains active when the recent pool is exhausted');
+});
+
 test('merge never loses local data and respects unsaves', () => {
   const local = { ...blank(), interests: ['Music'], saved: ['1', '2'], completed: [{ id: '1', date: 10, reflection: 'x' }], stamps: { saved: { 2: { on: true, t: 100 } }, interests: {} } };
   const cloud = { ...blank(), interests: ['Drawing'], saved: ['2', '3'], completed: [{ id: '5', date: 20 }, { id: '1', date: 5, learned: 'older note' }], stamps: { saved: { 2: { on: false, t: 200 } }, interests: {} } };
@@ -103,7 +133,7 @@ test('curation: five categories, all used, balanced, every record valid', () => 
   assert.deepEqual(categories, ['Social', 'Creative', 'Adventure', 'Skill-building', 'Weird-but-safe']);
   categories.forEach((c) => {
     const n = quests.filter((q) => q.category === c).length;
-    assert.ok(n >= 10 && n <= 25, c + ' has ' + n);
+    assert.ok(n >= 30, c + ' has ' + n + ' active quests after the import');
   });
   allQuests.forEach((q) => assert.ok(categories.includes(q.category), q.id + ' ' + q.category));   // retired ones too
 });
@@ -134,5 +164,7 @@ test('curation: variety across social intensity, setting, cost and length', () =
 
 test('curation: no filler — banned premises are not in the active library', () => {
   const filler = /ted talk|spoon|stare at (a|the) wall|imaginary conversation|houseplant|plant (a )?(ted|press)|stuffed toys|your sandwich/i;
-  quests.forEach((q) => assert.ok(!filler.test([q.title, q.description].join(' ')), q.id + ' ' + q.title));
+  quests.filter((q) => Number(q.id) <= 226).forEach((q) =>
+    assert.ok(!filler.test([q.title, q.description].join(' ')), q.id + ' ' + q.title)
+  ); // imported quests retain the exact user-selected wording, including examples like "spoon".
 });

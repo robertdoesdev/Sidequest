@@ -524,20 +524,44 @@ function mysteryOfTheDay() {
 
 function homePicks() {
   if (!ui.home) {
-    const picked = pickedForYou(state, 1)[0];
-    let different = somethingDifferent(state, { exclude: [picked.id] });
+    const dailyId = dailyData().q.id;
+    const reserved = [dailyId];
+    const picked = pickedForYou(state, 1, { exclude: reserved })[0] ||
+      quests.find((q) => !reserved.includes(q.id));
+    const excludePicked = [...reserved, picked?.id].filter(Boolean);
+    const different = somethingDifferent(state, { exclude: excludePicked }) ||
+      quests.find((q) => !q.mystery && !excludePicked.includes(q.id));
+    const excludeFeatured = [...excludePicked, different?.id].filter(Boolean);
+    const nearby = pickedForYou(state, 3, { env: 'nearby', exclude: excludeFeatured });
+    const excludePopular = [...excludeFeatured, ...nearby.map((q) => q.id)];
+    const popular = pickedForYou(state, 3, { exclude: excludePopular });
     ui.home = {
       picked,
       different,
-      nearby: pickedForYou(state, 3, { env: 'nearby' }),
+      nearby,
+      popular,
       mystery: mysteryOfTheDay()
     };
   }
   return ui.home;
 }
 
+/* IDs currently visible on the landing page are hard exclusions for Roll. */
+function homeVisibleQuestIds() {
+  if (!ui.home) return [];
+  const h = ui.home;
+  return [...new Set([
+    h.picked?.id,
+    h.different?.id,
+    ...(h.nearby || []).map((q) => q.id),
+    ...(h.popular || []).map((q) => q.id),
+    h.mystery?.id,
+    dailyData().q.id
+  ].filter(Boolean))];
+}
+
 function home() {
-  const { picked, different, nearby, mystery } = homePicks();
+  const { picked, different, nearby, popular, mystery } = homePicks();
 
   const categoriesDone = new Set(
     state.completed.map(
@@ -832,13 +856,7 @@ A little something to get you started.
         </div>
 
         <div class="quest-grid">
-          ${[
-            questById('1'),
-            questById('3'),
-            questById('13')
-          ]
-            .map(questCard)
-            .join('')}
+          ${popular.map(questCard).join('')}
         </div>
       </section>
 
@@ -989,7 +1007,7 @@ function discover() {
       (!qs.diff || q.difficulty === qs.diff) &&
       (!term ||
         (unlocked(q)
-          ? `${q.title} ${q.skill} ${q.category} ${q.type} ${q.environment} ${q.interests.join(' ')}`
+          ? `${q.title} ${q.description} ${q.detail?.mission || ''} ${q.detail?.what || ''} ${q.detail?.complete || ''} ${q.skill} ${q.category} ${q.type} ${q.environment} ${q.interests.join(' ')}`
           : 'mystery'
         )
           .toLowerCase()
@@ -1240,7 +1258,9 @@ function startRoll() {
   const cur = state.roll || {};
   if (cur.phase === 'rolling') return;
   const history = cur.history || [];
-  const final = rollPick(state, 'random', history.slice(-6));
+  const homeIds = homeVisibleQuestIds();
+  const exclusions = [...new Set([...history.slice(-6), ...homeIds])];
+  const final = rollPick(state, 'random', exclusions, Math.random, homeIds);
   const reel = rollReel(final, state, 16);
   const count = (cur.count || 0) + 1;
 
@@ -3481,6 +3501,13 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && ui.conflict) { ui.conflict = null; render(); }
 });
 document.addEventListener('input', (e) => {
+  const search = e.target.closest('#search');
+  if (search && route() === '/discover') {
+    state.discover = { ...(state.discover || {}), search: search.value };
+    // render() restores the focused input and caret when keepFocus is true.
+    render({ keepFocus: true });
+    return;
+  }
   const dr = e.target.closest('[data-draft]');
   if (dr) { ui.showcase.drafts = ui.showcase.drafts || {}; ui.showcase.drafts[dr.dataset.draft] = dr.value.slice(0, 140); }
 });

@@ -157,11 +157,14 @@ function ranked(state, ctx = {}, rnd = Math.random) {
 
 /** PICKED FOR YOU — n recommendations, personalised with some jitter. */
 export function pickedForYou(state, n = 3, ctx = {}, rnd = Math.random) {
-  const r = ranked(state, ctx, rnd);
+  const excluded = new Set(ctx.exclude || []);
+  let pool = ranked(state, ctx, rnd).filter(({ q }) => !excluded.has(q.id)).slice();
+  // If exclusions consume the entire filtered pool, relax them rather than returning no picks.
+  if (!pool.length) pool = ranked(state, { ...ctx, exclude: [] }, rnd).slice();
   const out = [];
-  const pool = r.slice();
   while (out.length < n && pool.length) {
     const q = pickFrom(pool, rnd, Math.min(6, pool.length));
+    if (!q) break;
     out.push(q);
     pool.splice(pool.findIndex((x) => x.q.id === q.id), 1);
   }
@@ -178,7 +181,9 @@ export function somethingDifferent(state, ctx = {}, rnd = Math.random) {
     .filter((q) => !usual.has(q.type) || !p.interests.length)
     .filter((q) => q.difficulty === 'Easy' || p.count >= 3)
     .filter((q) => (ctx.exclude || []).indexOf(q.id) === -1);
-  const pool = candidates.length ? candidates : quests.filter((q) => !q.mystery && !p.done.has(q.id));
+  const pool = candidates.length
+    ? candidates
+    : quests.filter((q) => !q.mystery && !p.done.has(q.id) && !(ctx.exclude || []).includes(q.id));
   /* Novelty = distance from the user's typical comfort, kept gentle. */
   const scored = pool
     .map((q) => ({
@@ -212,22 +217,41 @@ const rollMatch = (q, f) => {
 };
 
 /** Pick the quest that a roll will land on (decided up front, then dramatised). */
-export function rollPick(state, filterId = 'random', exclude = [], rnd = Math.random) {
+export function rollPick(state, filterId = 'random', exclude = [], rnd = Math.random, hardExclude = []) {
   const f = ROLL_FILTERS.find((x) => x.id === filterId)?.ctx || {};
   const p = profile(state);
+  const hard = new Set(hardExclude);
 
   /* Occasionally a mystery quest lands. Only in the unfiltered roll, and rarely. */
   if (filterId === 'random' && rnd() < 0.08) {
     const mysteries = quests.filter(
-      (q) => q.mystery && !state.revealed.includes(q.id) && !p.done.has(q.id) && !exclude.includes(q.id)
+      (q) => q.mystery && !state.revealed.includes(q.id) && !p.done.has(q.id) &&
+        !exclude.includes(q.id) && !hard.has(q.id)
     );
     if (mysteries.length) return mysteries[Math.floor(rnd() * mysteries.length)];
   }
 
-  let pool = quests.filter((q) => !q.mystery && rollMatch(q, f) && !exclude.includes(q.id));
-  const fresh = pool.filter((q) => !p.done.has(q.id));
+  let pool = quests.filter((q) => !q.mystery && rollMatch(q, f) &&
+    !exclude.includes(q.id) && !hard.has(q.id));
+  let fresh = pool.filter((q) => !p.done.has(q.id));
   if (fresh.length) pool = fresh;
+
+  // Recent rolls are soft exclusions: once they exhaust the matching pool, allow them again.
+  // Landing-page quests are hard exclusions and stay excluded while any alternative exists.
+  if (!pool.length) {
+    pool = quests.filter((q) => !q.mystery && rollMatch(q, f) && !hard.has(q.id));
+    fresh = pool.filter((q) => !p.done.has(q.id));
+    if (fresh.length) pool = fresh;
+  }
+  // Only relax the selected filter as a final fallback; never choose a currently displayed home quest
+  // while any other non-mystery quest remains.
+  if (!pool.length) {
+    pool = quests.filter((q) => !q.mystery && !hard.has(q.id));
+    fresh = pool.filter((q) => !p.done.has(q.id));
+    if (fresh.length) pool = fresh;
+  }
   if (!pool.length) pool = quests.filter((q) => !q.mystery);
+
   /* Rolls are mostly random, with a light nudge towards the user's taste. */
   const scored = pool
     .map((q) => ({ q, s: score(q, p, state, { jitter: 6, exclude }, rnd) }))

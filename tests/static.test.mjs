@@ -116,6 +116,14 @@ test('activity: counts match the records, newest first', () => {
   assert.ok(a.events.some((e) => /challenged you/.test(e.text)));
 });
 
+test('discover: search updates while typing and includes quest descriptions', () => {
+  const app = read('app.js');
+  assert.match(app, /document\.addEventListener\('input', \(e\) => \{\s*const search = e\.target\.closest\('#search'\)/);
+  assert.match(app, /state\.discover = \{ \.\.\.\(state\.discover \|\| \{\}\), search: search\.value \}/);
+  assert.match(app, /render\(\{ keepFocus: true \}\)/);
+  assert.match(app, /\$\{q\.title\} \$\{q\.description\}/);
+});
+
 /* ---------- install ---------- */
 test('install: only promises what the browser can do', () => {
   const iosSafari = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
@@ -130,8 +138,8 @@ test('install: only promises what the browser can do', () => {
 });
 
 /* ---------- quest catalogue guardrails ---------- */
-test('catalogue: new dares are original, safe, varied and appended with stable ids', () => {
-  const fresh = allQuests.slice(169);
+test('catalogue: curated additions remain safe, varied and appended with stable ids', () => {
+  const fresh = allQuests.slice(169, 226); // original V4 curation; retain its historical ID checks
   assert.ok(fresh.length >= 30);
   fresh.forEach((q, i) => assert.equal(q.id, String(170 + i)));
   assert.equal(new Set(allQuests.map((q) => q.title.toLowerCase())).size, allQuests.length);   // no duplicate titles
@@ -141,4 +149,11 @@ test('catalogue: new dares are original, safe, varied and appended with stable i
   assert.ok(new Set(fresh.map((q) => q.type)).size >= 4, 'varied types');
   assert.ok(fresh.filter((q) => q.socialLevel >= 1).every((q) => q.detail.notes.some((n) => /pressure/i.test(n))), 'consent note on social dares');
   assert.ok(fresh.every((q) => q.steps.length >= 3 && q.detail.mission));
+
+  const imported = allQuests.slice(226);
+  assert.equal(imported.length, 380);
+  imported.forEach((q, i) => assert.equal(q.id, String(227 + i)));
+  const unsafe = /trespass|break into|steal|stunt|drunk|alcohol|drug|knife|fire\b|climb (a|the) (roof|building|fence)|follow (a )?(stranger|someone)|prank (a )?stranger/i;
+  imported.forEach((q) => assert.ok(!unsafe.test([q.title, q.description, ...q.steps].join(' ')), q.title));
+  assert.ok(imported.filter((q) => q.socialLevel >= 1).every((q) => q.detail.notes.some((n) => /pressure/i.test(n))), 'consent note on social quests');
 });

@@ -80,7 +80,7 @@ Notes: Vercel Cron's every-minute schedule needs a plan that allows it (Hobby is
 | File | What it does |
 |---|---|
 | `index.html`, `styles.css`, `app.css` | shell and styling |
-| `data.js` | quest library (169 quests) |
+| `data.js` | quest library (606 historical records; 462 active quests) |
 | `recommend.js` | scoring, Daily, Roll, Weird, I'm Bored |
 | `app.js` | state, routing, views |
 | `cloud.js` | API client, sync engine and merge logic |
